@@ -1,0 +1,6 @@
+#separator \x09
+#fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	proto	service	duration	orig_bytes	resp_bytes	conn_state	local_orig	local_resp	missed_bytes	history	orig_pkts	orig_ip_bytes	resp_pkts	resp_ip_bytes
+1787583994.4310057	C1	10.50.1.10	51000	10.50.1.20	80	tcp	http	0.02	200	180	SF	T	T	0	ShADadfF	6	480	5	400
+1787583994.6000056	C2	10.50.1.10	52000	203.0.113.10	443	tcp	ssl	0.08	400	200	S1	T	F	0	ShADad	4	520	3	280
+1787583994.8762097	C3	10.50.1.99	40022	10.50.1.20	22	tcp	ssh	0.01	60	60	REJ	T	T	0	Sr	2	120	1	60
+1787583994.9804676	C4	10.50.1.77	46000	203.0.113.50	443	tcp	ssl	0.1	300	80	S1	T	F	0	ShADad	3	380	2	140

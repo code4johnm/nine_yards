@@ -1,0 +1,4 @@
+#separator \x09
+#fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	method	host	uri	status_code
+1787583994.4390059	H1	10.50.1.10	51000	10.50.1.20	80	GET	www.lab.example	/health	200
+1787583995.2145112	H2	10.50.1.10	54000	10.50.1.20	80	GET	www.lab.example	/api/item/0	404

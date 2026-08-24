@@ -1,0 +1,4 @@
+#separator \x09
+#fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	proto	query	qclass_name	qtype_name	rcode_name
+1787583994.356006	D1	10.50.1.10	40000	10.50.1.30	53	udp	www.lab.example	C_INTERNET	A	NOERROR
+1787583994.3900058	D2	10.50.1.10	40001	10.50.1.30	53	udp	ntp.lab.example	C_INTERNET	A	NOERROR
