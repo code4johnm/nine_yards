@@ -17,6 +17,9 @@
   function ctxOf(el) {
     if (typeof el === "string") el = document.querySelector(el);
     if (!el) return null;
+    const attrH = el.getAttribute("height");
+    if (attrH && !el.style.height) el.style.height = Number(attrH) + "px";
+    if (!el.style.width) el.style.width = "100%";
     const dpr = window.devicePixelRatio || 1;
     const w = el.clientWidth || 300;
     const h = el.clientHeight || 80;

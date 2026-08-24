@@ -293,7 +293,7 @@
         <div class="panel span-4"><h2>Protocol mix</h2><canvas id="c-pie" height="180"></canvas></div>
         <div class="panel span-6"><h2>Alert rate</h2><canvas id="c-al" height="160"></canvas></div>
         <div class="panel span-6"><h2>New flows</h2><canvas id="c-fl" height="160"></canvas></div>
-        <div class="panel span-12"><h2>L3 conversations</h2><canvas id="c-g" height="280"></canvas>
+        <div class="panel span-12"><h2>L3 conversations</h2><canvas id="c-g" height="560"></canvas>
           <div class="legend"><span><i style="background:#3dd6d0"></i>Internal</span><span><i style="background:#c9a0ff"></i>External</span>
           <span><i style="background:#ff7a45"></i>Has alerts</span><span><i style="background:#7aa2ff"></i>TCP</span>
           <span><i style="background:#3dd6d0"></i>UDP</span><button id="g-reset" class="ghost">Reset layout</button></div></div>
@@ -359,7 +359,7 @@
     if (state.inner === "conversation") {
       const g = await API.graph(params({ kind: "conversations" }));
       main.innerHTML = `<div class="panel"><h2>Conversations from packets/flows</h2>
-        <canvas id="c-g" height="360"></canvas>
+        <canvas id="c-g" height="560"></canvas>
         <button id="g-reset" class="ghost">Reset layout</button>
         <label class="chk"><input type="checkbox" id="more" ${state.showMore ? "checked" : ""} /> Show more nodes</label></div>`;
       state.graphCtl = Charts.graph("#c-g", g, { onNode: (n) => filterHost(n.id), onEdge: (e) => e.flow_id && inspectFlow(e.flow_id) });
@@ -417,7 +417,7 @@
     const data = await API.flows(params(extra));
     const g = await API.graph(params({ kind: "conversations" }));
     main.innerHTML = `<section class="grid-12">
-      <div class="panel span-5"><h2>Volume graph</h2><canvas id="c-g" height="280"></canvas>
+      <div class="panel span-5"><h2>Volume graph</h2><canvas id="c-g" height="560"></canvas>
         <button id="g-reset" class="ghost">Reset layout</button></div>
       <div class="panel span-7"><h2>Flows ${fmtNum(data.total)}</h2>${flowTable(data.rows)}${pager(data)}</div>
     </section>`;
@@ -492,14 +492,14 @@
     const data = await API.hosts(params({ limit: 200 }));
     const g = await API.graph(params({ kind: "hosts" }));
     if (state.inner === "relations") {
-      main.innerHTML = `<div class="panel"><h2>Host relationships</h2><canvas id="c-g" height="380"></canvas>
+      main.innerHTML = `<div class="panel"><h2>Host relationships</h2><canvas id="c-g" height="560"></canvas>
         <button id="g-reset" class="ghost">Reset layout</button></div>`;
       state.graphCtl = Charts.graph("#c-g", g, { onNode: (n) => filterHost(n.id) });
       $("#g-reset").onclick = () => state.graphCtl.reset();
       return;
     }
     main.innerHTML = `<section class="grid-12">
-      <div class="panel span-5"><h2>Map</h2><canvas id="c-g" height="300"></canvas></div>
+      <div class="panel span-5"><h2>Map</h2><canvas id="c-g" height="560"></canvas></div>
       <div class="panel span-7"><h2>Hosts ${fmtNum(data.total)}</h2>
         ${table(["IP", "Out", "In", "Alerts"],
           data.rows.map((h) => `
@@ -543,7 +543,7 @@
         return;
       }
       main.innerHTML = `<div class="panel empty">Public IPs present, but GeoLite2 MMDB is not installed. Geo map stays stubbed on purpose.</div>
-        <div class="panel"><h2>Internal vs external</h2><canvas id="c-g" height="320"></canvas></div>`;
+        <div class="panel"><h2>Internal vs external</h2><canvas id="c-g" height="560"></canvas></div>`;
       Charts.graph("#c-g", g, { onNode: (n) => filterHost(n.id) });
       return;
     }
@@ -558,7 +558,7 @@
           <div class="box">SQLite</div><span class="arrow">→</span>
           <div class="box">UI 127.0.0.1</div>
         </div></div>
-        <div class="panel"><h2>Internal / external</h2><canvas id="c-g" height="300"></canvas>
+        <div class="panel"><h2>Internal / external</h2><canvas id="c-g" height="560"></canvas>
           <button id="g-reset" class="ghost">Reset layout</button></div>`;
       state.graphCtl = Charts.graph("#c-g", g, { onNode: (n) => filterHost(n.id) });
       $("#g-reset").onclick = () => state.graphCtl.reset();
@@ -567,7 +567,7 @@
     const g = await API.graph(params({ kind, show_more: state.showMore }));
     const title = { l3: "L3 conversation graph", l4: "L4 service map", hmap: "Host relationship map" }[state.inner];
     main.innerHTML = `<div class="panel"><h2>${title}</h2>
-      <canvas id="c-g" height="400"></canvas>
+      <canvas id="c-g" height="560"></canvas>
       <div class="legend">
         <span><i style="background:#3dd6d0"></i>Internal host</span>
         <span><i style="background:#c9a0ff"></i>External</span>
@@ -576,7 +576,7 @@
         <label class="chk"><input type="checkbox" id="more" ${state.showMore ? "checked" : ""} /> Show more (top 60)</label>
         <button id="g-reset" class="ghost">Reset layout</button>
       </div></div>
-      <div class="panel"><h2>Source → destination</h2><canvas id="c-sk" height="280"></canvas></div>`;
+      <div class="panel"><h2>Source → destination</h2><canvas id="c-sk" height="420"></canvas></div>`;
     state.graphCtl = Charts.graph("#c-g", g, {
       onNode: (n) => filterHost(n.id.replace(/^svc:/, "")),
       onEdge: (e) => e.flow_id && inspectFlow(e.flow_id),
