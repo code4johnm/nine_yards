@@ -91,6 +91,20 @@ a { color: var(--accent2); text-decoration: none; }
 .kpi .k { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 650; }
 .kpi .v { font-size: 42px; font-variant-numeric: tabular-nums; margin-top: 6px; line-height: 1.1; font-weight: 700; color: var(--text); }
 .kpi canvas { width: 100%; height: 44px; margin-top: 8px; }
+/* Canvas default box is 300×150. Stretch charts/diagrams to the panel. */
+.panel canvas,
+.drawer canvas {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+}
+/* Conversation / map / sankey fields: full content width + taller so nodes are not clipped. */
+#c-g {
+  min-height: 560px;
+}
+#c-sk {
+  min-height: 420px;
+}
 .grid-2 { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; }
 .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
 .grid-12 { display: grid; grid-template-columns: repeat(12, 1fr); gap: 16px; }
@@ -168,9 +182,11 @@ button.live-on { border-color: var(--crit); color: var(--crit); background: #2a1
 .swim .arr { text-align: center; color: var(--accent2); font-family: ui-monospace, monospace; }
 .path {
   display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 16px; font-weight: 650;
+  width: 100%;
 }
 .path .box {
-  background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; min-width: 110px; text-align: center;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+  flex: 1 1 128px; min-width: 110px; text-align: center;
 }
 .path .arrow { color: var(--accent); font-size: 22px; }
 #chart-tip {
