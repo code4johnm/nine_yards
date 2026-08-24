@@ -1,4 +1,4 @@
 #separator \x09
 #fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	version	server_name	ja3
-1787583994.6430056	S1	10.50.1.10	52000	203.0.113.10	443	TLSv12	update.lab.example	demoja3aaaaaaaaaaaaaaaaaaaaaaaaaa
-1787583994.9804676	S2	10.50.1.77	46000	203.0.113.50	443	TLSv12	status.lab.example	demoja3bbbbbbbbbbbbbbbbbbbbbbbbbb
+1700000000.3209996	S1	10.50.1.10	52000	203.0.113.10	443	TLSv12	update.lab.example	demoja3aaaaaaaaaaaaaaaaaaaaaaaaaa
+1700000000.6584616	S2	10.50.1.77	46000	203.0.113.50	443	TLSv12	status.lab.example	demoja3bbbbbbbbbbbbbbbbbbbbbbbbbb

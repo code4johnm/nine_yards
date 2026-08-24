@@ -21,7 +21,8 @@ flowchart TB
 
 Full write-up: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)  
 Operator hunts: [docs/OPERATOR.md](docs/OPERATOR.md)  
-Gaps / hardening: [docs/LIMITATIONS.md](docs/LIMITATIONS.md)
+Gaps / hardening: [docs/LIMITATIONS.md](docs/LIMITATIONS.md)  
+Secure software baseline (not an ATO): [secure-software-baseline/README.md](secure-software-baseline/README.md)
 
 **Why this stack:** this Kali has tshark/dumpcap (user is in `wireshark`, dumpcap has `cap_net_raw`). Suricata and Zeek are **not** installed. FastAPI + SQLite is enough to demo a serious NIDS/stat dashboard without Elasticsearch.
 

@@ -1,0 +1,100 @@
+# 9yards NIDS — profile contract
+# Document: 9YARDS-PRF-001
+# Version: 0.1.0
+# Profiles are rebuild/redeploy artifacts. Do not ship a prod artifact that
+# can disable enforcement via an unreviewed local override.
+#
+# Maps to: CM-2, CM-6, CM-7, SC-7, SI-12, SA-10, SR-4, SSDF PW.9 / PS.2
+# Intelligence Oversight: prod forbids payload store and public bind.
+
+schema_version: 1
+product: 9yards-nids
+product_version: "1.0.0"
+
+# Shared hard constraints (cannot be weakened in prod)
+invariants:
+  secrets_in_source: false
+  floating_dependencies_on_release_branch: false
+  undocumented_prod_override: false
+
+profiles:
+  dev:
+    description: "Developer workstation. Debug allowed. Policy logged, not always enforced."
+    bind_host: "127.0.0.1"
+    bind_port: 8787
+    allow_public_bind: false          # still default deny; explicit env is logged
+    payload_enabled: false
+    payload_max_bytes: 256
+    store_pcap: false
+    debug_surfaces: true
+    live_capture: false
+    autoload_demo: true
+    api_token_required: false
+    signing_required: false
+    sbom_required: false             # required if the build is published
+    sbom_required_if_published: true
+    floating_dependencies: true      # local only
+    fail_mode: observable            # fail observable
+    admin_interfaces: local_only
+    log_level: DEBUG
+    control_ids: ["CM-6", "AU-2", "SC-7"]
+
+  audit:
+    description: "Enforcing policy, limited debug, signed SBOM. Used for assessment builds."
+    bind_host: "127.0.0.1"
+    bind_port: 8787
+    allow_public_bind: false
+    payload_enabled: false
+    payload_max_bytes: 256
+    store_pcap: false
+    debug_surfaces: limited          # health + logs; no payload dump
+    live_capture: false
+    autoload_demo: true
+    api_token_required: true
+    signing_required: true
+    sbom_required: true
+    sbom_signed: true
+    floating_dependencies: false
+    fail_mode: closed
+    admin_interfaces: token_required
+    log_level: INFO
+    control_ids: ["CM-6", "IA-5", "SA-10", "SR-4", "AU-2"]
+
+  prod:
+    description: "Production. No debug surfaces. Signing and SBOM required. No floating deps."
+    bind_host: "127.0.0.1"
+    bind_port: 8787
+    allow_public_bind: false
+    payload_enabled: false
+    payload_max_bytes: 0
+    store_pcap: false
+    debug_surfaces: false
+    live_capture: false              # enable only via reviewed exception + capability drop
+    autoload_demo: false
+    api_token_required: true
+    signing_required: true
+    sbom_required: true
+    sbom_signed: true
+    floating_dependencies: false
+    fail_mode: closed
+    admin_interfaces: disabled_or_phishing_resistant_mfa
+    # If admin is exposed off-loopback, NIST SP 800-63 applies (program must add IdP).
+    log_level: WARNING
+    control_ids: ["CM-6", "CM-7", "SC-7", "SI-12", "SA-10", "SR-4", "AC-6", "IA-2"]
+    io_notes:
+      - "No payload storage"
+      - "No public bind"
+      - "No USP collection purpose"
+      - "Optional live capture is residual risk; document exception"
+
+# Exceptions must be a reviewed file in the same release, not an implicit .env
+# that is copied into the artifact.
+exception_policy:
+  require_ticket_id: true
+  require_control_id: true
+  require_expiration: true
+  forbid_in_prod:
+    - payload_enabled
+    - allow_public_bind
+    - floating_dependencies
+    - debug_surfaces

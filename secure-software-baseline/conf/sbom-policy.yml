@@ -1,0 +1,97 @@
+# 9yards NIDS — SBOM and VEX policy
+# Document: 9YARDS-SBOM-001
+# Version: 0.1.0
+# Aligns with CISA 2026 Minimum Elements for a Software Bill of Materials
+# (replaces 2021 NTIA minimum elements). SPDX 3.x primary.
+# CycloneDX is optional interchange only.
+# NIST SP 800-161 Rev. 1 C-SCRM; SSDF PS.3 / PW.4; SR-4, SA-15, SI-5.
+#
+# SBOM-for-AI (CISA/G7): NOT APPLICABLE — no generative AI / foundation model
+# artifact in 9yards NIDS v1.0.0. Re-open this file if a model is added.
+
+schema_version: 1
+product: 9yards-nids
+
+primary_format:
+  name: SPDX
+  version: "3.0"          # SPDX 3.x
+  media_type: application/spdx+json
+
+optional_interchange:
+  name: CycloneDX
+  version: "1.6"
+  required: false
+
+lifecycle_context:
+  # SBOM generation context (CISA 2026 element)
+  default: build
+  allowed: [source, build, analyzed, deployed]
+
+required_fields:
+  sbom_document:
+    - sbom_author_signature          # detached or in-envelope signature
+    - sbom_tool_name
+    - sbom_tool_version
+    - sbom_data_format_name
+    - sbom_data_format_version
+    - sbom_generation_context        # lifecycle phase
+  component:
+    - producer                       # supplier
+    - name
+    - version
+    - hash_value
+    - hash_algorithm                 # SHA-256 required
+    - license                        # SPDX license identifier
+  coverage:
+    transitive: true
+    depth_limit: null                # no depth limit
+    include_os_packages: true        # tshark/dumpcap when in the image
+    include_first_party: true
+    include_demo_data_hash: true     # sample/lab-demo.pcap content hash
+
+hash:
+  algorithm: SHA-256
+  encoding: hex
+
+vex:
+  required_for_published_releases: true
+  formats_allowed: [csaf-vex, cyclonedx-vex]
+  emit_for: known_component_cves
+  store_with_artifact: true
+
+storage:
+  colocate_with_artifact: true
+  example_layout: |
+    dist/9yards_nids-1.0.0-py3-none-any.whl
+    dist/9yards_nids-1.0.0.spdx.json
+    dist/9yards_nids-1.0.0.spdx.json.sig
+    dist/9yards_nids-1.0.0.vex.json
+    dist/9yards_nids-1.0.0.vex.json.sig
+
+signing:
+  required_profiles: [audit, prod]
+  key_source: hsm_or_designated_release_key
+  forbid_developer_laptop_prod_key: true
+  # Do not document live key material or ceremony secrets in this file.
+
+fail_closed:
+  prod:
+    - missing_spdx
+    - missing_component_hash
+    - missing_license
+    - truncated_transitive_graph
+    - unsigned_sbom
+    - sbom_not_colocated
+  audit:
+    - missing_spdx
+    - unsigned_sbom
+  dev:
+    - none_unless_published
+
+c_scrm_intake:
+  record_path: third-party/intake/
+  required_fields: [producer, name, version, hash, license, source, decision]
+
+ai_sbom:
+  applicable: false
+  rationale: "9yards NIDS v1.0.0 contains a statistical detector, not a dual-use foundation model or generative AI component."

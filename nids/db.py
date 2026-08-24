@@ -141,7 +141,8 @@ CREATE TABLE IF NOT EXISTS hosts (
     packets_in INTEGER DEFAULT 0,
     packets_out INTEGER DEFAULT 0,
     alert_count INTEGER DEFAULT 0,
-    ports TEXT
+    ports TEXT,
+    tldn TEXT
 );
 
 CREATE TABLE IF NOT EXISTS kv (
@@ -174,6 +175,13 @@ class Store:
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.executescript(SCHEMA)
+        self._migrate()
+        self.backfill_tldn()
+
+    def _migrate(self) -> None:
+        cols = {r["name"] for r in self.query("PRAGMA table_info(hosts)")}
+        if "tldn" not in cols:
+            self.execute("ALTER TABLE hosts ADD COLUMN tldn TEXT")
 
     def close(self) -> None:
         with self._lock:
@@ -359,8 +367,8 @@ class Store:
         bins = json.dumps(ports)
         if not row:
             self.execute(
-                """INSERT INTO hosts (ip, first_seen, last_seen, bytes_in, bytes_out, packets_in, packets_out, ports)
-                   VALUES (?,?,?,?,?,?,?,?)""",
+                """INSERT INTO hosts (ip, first_seen, last_seen, bytes_in, bytes_out, packets_in, packets_out, ports, tldn)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
                 (
                     ip, ts, ts,
                     length if direction == "in" else 0,
@@ -368,6 +376,7 @@ class Store:
                     1 if direction == "in" else 0,
                     1 if direction == "out" else 0,
                     bins,
+                    None,
                 ),
             )
             return
@@ -383,6 +392,73 @@ class Store:
                    WHERE ip=?""",
                 (ts, length, bins, ip),
             )
+
+    def set_host_tldn(self, ip: str | None, name: str | None) -> None:
+        from .util import clean_hostname
+        host = clean_hostname(name)
+        addr = (ip or "").strip()
+        if not addr or not host:
+            return
+        row = self.query_one("SELECT ip, tldn FROM hosts WHERE ip=?", (addr,))
+        now = time.time()
+        if not row:
+            self.execute(
+                """INSERT INTO hosts (ip, first_seen, last_seen, tldn)
+                   VALUES (?,?,?,?)""",
+                (addr, now, now, host),
+            )
+            return
+        if row.get("tldn"):
+            return
+        self.execute("UPDATE hosts SET tldn=? WHERE ip=?", (host, addr))
+
+    def tldn_map(self, ips: Iterable[str]) -> dict[str, str]:
+        addrs = [i for i in dict.fromkeys(ips) if i]
+        if not addrs:
+            return {}
+        out: dict[str, str] = {}
+        chunk = 400
+        for i in range(0, len(addrs), chunk):
+            part = addrs[i : i + chunk]
+            q = ",".join("?" for _ in part)
+            for row in self.query(f"SELECT ip, tldn FROM hosts WHERE ip IN ({q}) AND IFNULL(tldn,'') != ''", part):
+                out[row["ip"]] = row["tldn"]
+        return out
+
+    def backfill_tldn(self) -> None:
+        self.execute(
+            """UPDATE hosts SET tldn = (
+                   SELECT f.sni FROM flows f
+                   WHERE f.dst_ip = hosts.ip AND IFNULL(f.sni,'') != ''
+                   LIMIT 1
+               )
+               WHERE IFNULL(tldn,'') = ''
+                 AND EXISTS (SELECT 1 FROM flows f WHERE f.dst_ip = hosts.ip AND IFNULL(f.sni,'') != '')"""
+        )
+        self.execute(
+            """UPDATE hosts SET tldn = (
+                   SELECT p.sni FROM packets p
+                   WHERE p.dst_ip = hosts.ip AND IFNULL(p.sni,'') != ''
+                   LIMIT 1
+               )
+               WHERE IFNULL(tldn,'') = ''
+                 AND EXISTS (SELECT 1 FROM packets p WHERE p.dst_ip = hosts.ip AND IFNULL(p.sni,'') != '')"""
+        )
+        rows = self.query(
+            """SELECT dst_ip, info FROM packets
+               WHERE info LIKE '%host=%' AND dst_ip IS NOT NULL
+               LIMIT 4000"""
+        )
+        from .util import clean_hostname
+        for r in rows:
+            info = r.get("info") or ""
+            host = None
+            for part in info.split():
+                if part.lower().startswith("host="):
+                    host = clean_hostname(part.split("=", 1)[1])
+                    break
+            if host:
+                self.set_host_tldn(r.get("dst_ip"), host)
 
     def insert_stats(self, row: dict[str, Any]) -> None:
         self.execute(

@@ -189,6 +189,7 @@ def build_app(settings: Settings, store: Store, engine: Engine, lifespan=None) -
             r = serialize_row(r)
             r["tcp_flags_s"] = flags_str(r.get("tcp_flags"))
             out.append(r)
+        _attach_tldn(store, out)
         return {"rows": out, "total": total, "limit": limit, "offset": offset}
 
     @api.get("/packets/{pid}")
@@ -198,6 +199,7 @@ def build_app(settings: Settings, store: Store, engine: Engine, lifespan=None) -
             raise HTTPException(404, "packet not found")
         r = serialize_row(r)
         r["tcp_flags_s"] = flags_str(r.get("tcp_flags"))
+        _attach_tldn(store, [r])
         return r
 
     @api.get("/packets/{pid}/payload")
@@ -274,6 +276,7 @@ def build_app(settings: Settings, store: Store, engine: Engine, lifespan=None) -
             r["total_bytes"] = (r.get("bytes") or 0) + (r.get("bytes_rev") or 0)
             r["total_packets"] = (r.get("packets") or 0) + (r.get("packets_rev") or 0)
             out.append(r)
+        _attach_tldn(store, out)
         return {"rows": out, "total": total, "limit": limit, "offset": offset}
 
     @api.get("/flows/{fid}")
@@ -285,6 +288,7 @@ def build_app(settings: Settings, store: Store, engine: Engine, lifespan=None) -
         r["tcp_flags_s"] = flags_str(r.get("tcp_flags"))
         r["total_bytes"] = (r.get("bytes") or 0) + (r.get("bytes_rev") or 0)
         r["total_packets"] = (r.get("packets") or 0) + (r.get("packets_rev") or 0)
+        _attach_tldn(store, [r])
         return r
 
     @api.get("/alerts")
@@ -334,6 +338,7 @@ def build_app(settings: Settings, store: Store, engine: Engine, lifespan=None) -
         )]
         total = store.scalar(f"SELECT COUNT(*) FROM alerts WHERE {w}", args)
         demo_n = store.scalar(f"SELECT COUNT(*) FROM alerts WHERE {w} AND is_demo=1", args)
+        _attach_tldn(store, rows)
         return {"rows": rows, "total": total, "demo": demo_n, "limit": limit, "offset": offset}
 
     @api.post("/alerts/{aid}/ack")
@@ -424,6 +429,10 @@ def build_app(settings: Settings, store: Store, engine: Engine, lifespan=None) -
             (t1, t0),
         ) or {"inbound": 0, "outbound": 0}
         iat = _interarrival(store, t0, t1)
+        _stamp_ip_tldn(store, talkers)
+        _stamp_ip_tldn(store, dests)
+        _stamp_ip_tldn(store, attackers)
+        _stamp_ip_tldn(store, victims)
         return {
             "protocols": proto,
             "tcp_flags": flags,
@@ -478,12 +487,14 @@ def build_app(settings: Settings, store: Store, engine: Engine, lifespan=None) -
                 if key:
                     alert_n[key] = alert_n.get(key, 0) + int(a["n"] or 0)
         if kind == "services":
-            return _graph_services(rows, alert_n, cap)
-        if kind == "subnet":
-            return _graph_subnet(rows, alert_n, cap)
-        if kind == "hosts":
-            return _graph_hosts(rows, alert_n, cap)
-        return _graph_conversations(rows, alert_n, cap)
+            g = _graph_services(rows, alert_n, cap)
+        elif kind == "subnet":
+            g = _graph_subnet(rows, alert_n, cap)
+        elif kind == "hosts":
+            g = _graph_hosts(rows, alert_n, cap)
+        else:
+            g = _graph_conversations(rows, alert_n, cap)
+        return _with_tldn_graph(store, g)
 
     @api.get("/hosts")
     def hosts(
@@ -499,8 +510,8 @@ def build_app(settings: Settings, store: Store, engine: Engine, lifespan=None) -
         where = ["last_seen BETWEEN ? AND ?"]
         args: list[Any] = [t0, t1]
         if q:
-            where.append("ip LIKE ?")
-            args.append(f"%{q}%")
+            where.append("(ip LIKE ? OR IFNULL(tldn,'') LIKE ?)")
+            args.extend([f"%{q}%", f"%{q}%"])
         sort_col = sort if sort in {"bytes_in", "bytes_out", "packets_in", "packets_out", "alert_count", "last_seen"} else "bytes_out"
         w = " AND ".join(where)
         rows = [serialize_row(r) for r in store.query(
@@ -508,6 +519,11 @@ def build_app(settings: Settings, store: Store, engine: Engine, lifespan=None) -
             args + [min(limit, 2000), offset],
         )]
         total = store.scalar(f"SELECT COUNT(*) FROM hosts WHERE {w}", args)
+        for r in rows:
+            if r.get("tldn"):
+                r["name"] = f"{r['ip']} | {r['tldn']}"
+            else:
+                r["name"] = r.get("ip")
         return {"rows": rows, "total": total}
 
     @api.get("/hosts/{ip}")
@@ -528,7 +544,12 @@ def build_app(settings: Settings, store: Store, engine: Engine, lifespan=None) -
             "SELECT * FROM alerts WHERE (src_ip=? OR dst_ip=?) ORDER BY last_seen DESC LIMIT 20",
             (ip, ip),
         )]
-        return {"host": serialize_row(row), "conversations": conv, "alerts": alerts}
+        _attach_tldn(store, conv)
+        _attach_tldn(store, alerts)
+        host = serialize_row(row)
+        if host.get("tldn"):
+            host["name"] = f"{host['ip']} | {host['tldn']}"
+        return {"host": host, "conversations": conv, "alerts": alerts}
 
     @api.get("/sensor")
     def sensor() -> dict[str, Any]:
@@ -655,6 +676,7 @@ def build_app(settings: Settings, store: Store, engine: Engine, lifespan=None) -
             rows = store.query("SELECT * FROM alerts WHERE last_seen BETWEEN ? AND ? LIMIT 20000", (t0, t1))
         else:
             raise HTTPException(404, "unknown export")
+        _attach_tldn(store, rows)
         if fmt == "json":
             return JSONResponse(rows)
         if not rows:
@@ -775,6 +797,52 @@ def _proto_stack(store: Store, t0: float, t1: float) -> list[dict[str, Any]]:
             p = "OTHER"
         out[i][p] += 1
     return out
+
+
+def _attach_tldn(store: Store, rows: list[dict[str, Any]]) -> None:
+    ips: list[str] = []
+    for r in rows:
+        for key in ("src_ip", "dst_ip", "ip"):
+            v = r.get(key)
+            if v:
+                ips.append(v)
+    names = store.tldn_map(ips)
+    for r in rows:
+        src = r.get("src_ip")
+        dst = r.get("dst_ip")
+        ip = r.get("ip")
+        if src:
+            r["src_tldn"] = names.get(src)
+        if dst:
+            r["dst_tldn"] = names.get(dst)
+        if ip:
+            r["tldn"] = names.get(ip) or r.get("tldn")
+            r["name"] = f"{ip} | {r['tldn']}" if r.get("tldn") else ip
+
+
+def _stamp_ip_tldn(store: Store, rows: list[dict[str, Any]]) -> None:
+    _attach_tldn(store, rows)
+
+
+def _with_tldn_graph(store: Store, graph: dict[str, Any]) -> dict[str, Any]:
+    ips = [
+        n["id"] for n in graph.get("nodes") or []
+        if n.get("kind") not in ("service", "other", "zone")
+    ]
+    names = store.tldn_map(ips)
+    for n in graph.get("nodes") or []:
+        t = names.get(n.get("id"))
+        if t:
+            n["tldn"] = t
+            n["label"] = f"{n['id']} | {t}"
+    for e in graph.get("edges") or []:
+        st = names.get(e.get("source"))
+        tt = names.get(e.get("target"))
+        e["source_tldn"] = st
+        e["target_tldn"] = tt
+        e["source_label"] = f"{e['source']} | {st}" if st else e.get("source")
+        e["target_label"] = f"{e['target']} | {tt}" if tt else e.get("target")
+    return graph
 
 
 def _node(ip: str, bytes_: int, pkts: int, alerts: int) -> dict[str, Any]:

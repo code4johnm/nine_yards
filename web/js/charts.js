@@ -17,9 +17,15 @@
   function ctxOf(el) {
     if (typeof el === "string") el = document.querySelector(el);
     if (!el) return null;
-    const attrH = el.getAttribute("height");
-    if (attrH && !el.style.height) el.style.height = Number(attrH) + "px";
     if (!el.style.width) el.style.width = "100%";
+    const isMap = el.classList.contains("map-canvas") || el.classList.contains("sankey-canvas")
+      || el.id === "c-g" || el.id === "c-sk";
+    // Non-map canvases: pin HTML height as CSS so width:100% does not
+    // preserve the 300×attr aspect ratio. Map frames are sized in CSS.
+    if (!isMap && !el.style.height) {
+      const attrH = el.getAttribute("height");
+      if (attrH) el.style.height = Number(attrH) + "px";
+    }
     const dpr = window.devicePixelRatio || 1;
     const w = el.clientWidth || 300;
     const h = el.clientHeight || 80;
@@ -29,6 +35,43 @@
     c.setTransform(dpr, 0, 0, dpr, 0, 0);
     c.font = "14px IBM Plex Sans, sans-serif";
     return { c, w, h, el };
+  }
+  function compactLabel(s, max) {
+    s = String(s || "");
+    max = max || 18;
+    if (s.length <= max) return s;
+    const head = Math.max(4, Math.ceil(max * 0.45));
+    const tail = Math.max(4, max - head - 1);
+    return s.slice(0, head) + "…" + s.slice(-tail);
+  }
+  function paintLabel(c, text, x, y, align) {
+    const parts = String(text || "").split(" | ");
+    const ip = parts[0] || "";
+    const tldn = parts.length > 1 ? parts.slice(1).join(" | ") : "";
+    c.font = "14px IBM Plex Mono, ui-monospace, monospace";
+    const ipW = c.measureText(ip).width;
+    c.font = "12px IBM Plex Sans, sans-serif";
+    const nmW = tldn ? c.measureText(tldn).width : 0;
+    const tw = Math.max(ipW, nmW);
+    const padX = 6, boxH = tldn ? 32 : 20;
+    let tx = x;
+    if (align === "right") tx = x - tw;
+    else if (align === "center") tx = x - tw / 2;
+    const top = tldn ? y - 20 : y - 14;
+    c.fillStyle = "rgba(11, 18, 32, 0.9)";
+    c.fillRect(tx - padX, top, tw + padX * 2, boxH);
+    c.strokeStyle = "rgba(42, 58, 88, 0.95)";
+    c.lineWidth = 1;
+    c.strokeRect(tx - padX, top, tw + padX * 2, boxH);
+    c.font = "14px IBM Plex Mono, ui-monospace, monospace";
+    c.fillStyle = "#e8eefc";
+    c.fillText(ip, tx, tldn ? y - 4 : y);
+    if (tldn) {
+      c.font = "12px IBM Plex Sans, sans-serif";
+      c.fillStyle = "#9db0d0";
+      c.fillText(tldn, tx, y + 10);
+    }
+    return tw;
   }
   function line(canvas, values, color) {
     const box = ctxOf(canvas);
@@ -205,31 +248,34 @@
     c.clearRect(0, 0, w, h);
     const left = {};
     const right = {};
+    const labels = {};
+    (opts.nodes || []).forEach((n) => { if (n && n.id) labels[n.id] = n.label || n.id; });
     (edges || []).forEach((e) => {
       left[e.source] = (left[e.source] || 0) + Number(e.bytes || 0);
       right[e.target] = (right[e.target] || 0) + Number(e.bytes || 0);
+      if (e.source_label) labels[e.source] = e.source_label;
+      if (e.target_label) labels[e.target] = e.target_label;
     });
-    const L = Object.keys(left).slice(0, 16);
-    const R = Object.keys(right).slice(0, 16);
+    const L = Object.keys(left).slice(0, 18);
+    const R = Object.keys(right).slice(0, 18);
     const maxL = Math.max(1, ...L.map((k) => left[k]));
+    const colW = Math.min(280, Math.max(160, w * 0.22));
+    const barW = 12;
     const lh = h / Math.max(L.length, 1);
     const rh = h / Math.max(R.length, 1);
     const ly = {};
     const ry = {};
-    c.font = "14px sans-serif";
     L.forEach((k, i) => {
       ly[k] = 10 + i * lh;
       c.fillStyle = "#7aa2ff";
-      c.fillRect(8, ly[k], 10, Math.max(8, (left[k] / maxL) * (lh - 8)));
-      c.fillStyle = "#e8eefc";
-      c.fillText(k, 24, ly[k] + 14);
+      c.fillRect(colW, ly[k], barW, Math.max(8, (left[k] / maxL) * Math.max(10, lh - 10)));
+      paintLabel(c, labels[k] || k, colW - 8, ly[k] + 16, "right");
     });
     R.forEach((k, i) => {
       ry[k] = 10 + i * rh;
       c.fillStyle = "#3dd6d0";
-      c.fillRect(w - 18, ry[k], 10, Math.max(8, (right[k] / maxL) * (rh - 8)));
-      c.fillStyle = "#e8eefc";
-      c.fillText(k, w - 170, ry[k] + 14);
+      c.fillRect(w - colW - barW, ry[k], barW, Math.max(8, (right[k] / maxL) * Math.max(10, rh - 10)));
+      paintLabel(c, labels[k] || k, w - colW + 8, ry[k] + 16, "left");
     });
     c.globalAlpha = 0.35;
     edges.slice(0, 40).forEach((e) => {
@@ -237,8 +283,8 @@
       c.strokeStyle = PROTO[e.proto] || "#7aa2ff";
       c.lineWidth = Math.max(1.5, Math.log10((e.bytes || 1) + 1) * 1.4);
       c.beginPath();
-      c.moveTo(40, ly[e.source] + 8);
-      c.bezierCurveTo(w * 0.4, ly[e.source] + 8, w * 0.6, ry[e.target] + 8, w - 24, ry[e.target] + 8);
+      c.moveTo(colW + barW + 2, ly[e.source] + 8);
+      c.bezierCurveTo(w * 0.42, ly[e.source] + 8, w * 0.58, ry[e.target] + 8, w - colW - 2, ry[e.target] + 8);
       c.stroke();
     });
     c.globalAlpha = 1;
@@ -259,78 +305,130 @@
     const box = ctxOf(canvas);
     if (!box) return { reset() {} };
     const { c, w, h, el } = box;
-    const nodes = (data.nodes || []).map((n, i) => {
-      const ang = (i / Math.max(1, data.nodes.length)) * Math.PI * 2;
-      return Object.assign({
-        x: w / 2 + Math.cos(ang) * Math.min(w, h) * 0.32,
-        y: h / 2 + Math.sin(ang) * Math.min(w, h) * 0.32,
-        vx: 0, vy: 0,
-      }, n);
-    });
+    const ncount = Math.max(1, (data.nodes || []).length);
+    const narrow = w < 720;
+    const side = narrow ? 24 : Math.max(64, Math.min(130, w * 0.13));
+    const pad = { l: side, r: side, t: 40, b: narrow ? 28 : 40 };
+    const cx = w / 2, cy = h / 2;
+    const ringX = Math.max(70, cx - pad.r);
+    const ringY = Math.max(60, cy - pad.b);
+    const nodes = (data.nodes || []).map((n) => Object.assign({}, n, {
+      x: cx, y: cy, vx: 0, vy: 0, hub: false,
+      short: compactLabel(n.label || n.id, narrow ? 12 : 18),
+    }));
     const idm = Object.fromEntries(nodes.map((n) => [n.id, n]));
     const edges = (data.edges || []).filter((e) => idm[e.source] && idm[e.target]);
     const maxB = Math.max(1, ...nodes.map((n) => n.bytes || 1));
-    function step() {
-      for (let k = 0; k < 40; k++) {
+    const deg = Object.fromEntries(nodes.map((n) => [n.id, 0]));
+    edges.forEach((e) => { deg[e.source]++; deg[e.target]++; });
+    function seed() {
+      const ranked = nodes.slice().sort((a, b) =>
+        (deg[b.id] - deg[a.id]) || ((b.bytes || 0) - (a.bytes || 0)));
+      nodes.forEach((n) => { n.hub = false; });
+      const useHub = ranked.length >= 6;
+      if (useHub && ranked[0]) {
+        ranked[0].x = cx;
+        ranked[0].y = cy;
+        ranked[0].hub = true;
+      }
+      const rest = nodes.filter((n) => !n.hub);
+      rest.forEach((n, i) => {
+        const ang = (i / Math.max(1, rest.length)) * Math.PI * 2 - Math.PI / 2;
+        n.x = cx + Math.cos(ang) * ringX * 0.92;
+        n.y = cy + Math.sin(ang) * ringY * 0.92;
+        n.vx = n.vy = 0;
+      });
+    }
+    function separate() {
+      const minD = Math.max(narrow ? 92 : 78, Math.sqrt((w * h) / ncount) * 0.4);
+      for (let k = 0; k < 50; k++) {
         for (let i = 0; i < nodes.length; i++) {
           for (let j = i + 1; j < nodes.length; j++) {
             let dx = nodes[j].x - nodes[i].x, dy = nodes[j].y - nodes[i].y;
-            let d2 = dx * dx + dy * dy || 1;
-            let f = 900 / d2;
-            dx /= Math.sqrt(d2); dy /= Math.sqrt(d2);
-            nodes[i].vx -= dx * f; nodes[i].vy -= dy * f;
-            nodes[j].vx += dx * f; nodes[j].vy += dy * f;
+            const d = Math.hypot(dx, dy) || 0.01;
+            if (d >= minD) continue;
+            const push = (minD - d) * 0.28;
+            dx /= d; dy /= d;
+            if (!nodes[i].hub) { nodes[i].x -= dx * push; nodes[i].y -= dy * push; }
+            if (!nodes[j].hub) { nodes[j].x += dx * push; nodes[j].y += dy * push; }
           }
         }
-        edges.forEach((e) => {
-          const a = idm[e.source], b = idm[e.target];
-          const dx = b.x - a.x, dy = b.y - a.y;
-          a.vx += dx * 0.01; a.vy += dy * 0.01;
-          b.vx -= dx * 0.01; b.vy -= dy * 0.01;
-        });
         nodes.forEach((n) => {
-          n.vx += (w / 2 - n.x) * 0.004;
-          n.vy += (h / 2 - n.y) * 0.004;
-          n.vx *= 0.82; n.vy *= 0.82;
-          n.x = Math.max(28, Math.min(w - 28, n.x + n.vx));
-          n.y = Math.max(28, Math.min(h - 28, n.y + n.vy));
+          if (n.hub) { n.x = cx; n.y = cy; return; }
+          n.x = Math.max(pad.l, Math.min(w - pad.r, n.x));
+          n.y = Math.max(pad.t, Math.min(h - pad.b, n.y));
         });
       }
     }
+    function layoutLabels() {
+      nodes.forEach((n) => {
+        n.r = 8 + Math.sqrt((n.bytes || 1) / maxB) * 14;
+        const ipLine = compactLabel(n.id, (n.id || "").includes(":") ? 16 : 20);
+        const nameLine = n.tldn ? compactLabel(n.tldn, narrow ? 16 : 24) : "";
+        n.short = nameLine ? `${ipLine} | ${nameLine}` : ipLine;
+        n.labW = Math.max(ipLine.length, nameLine.length) * 7.6 + 14;
+        n.labH = nameLine ? 34 : 20;
+        if (n.hub || narrow) n.labAlign = "center";
+        else n.labAlign = n.x >= cx ? "left" : "right";
+      });
+      const ordered = nodes.filter((n) => !n.hub).slice().sort((a, b) => a.y - b.y);
+      for (let i = 1; i < ordered.length; i++) {
+        const prev = ordered[i - 1], cur = ordered[i];
+        const closeX = Math.abs(prev.x - cur.x) < Math.max(prev.labW, cur.labW) + 28;
+        const gap = Math.max(prev.labH || 22, 22);
+        if (prev.labAlign === cur.labAlign && closeX && cur.y - prev.y < gap) {
+          cur.y = Math.min(h - pad.b, prev.y + gap);
+        }
+      }
+    }
     function draw() {
+      layoutLabels();
       c.clearRect(0, 0, w, h);
       edges.forEach((e) => {
         const a = idm[e.source], b = idm[e.target];
         c.strokeStyle = PROTO[e.proto] || "#7aa2ff";
-        c.lineWidth = Math.max(1.5, Math.log10((e.bytes || 1) + 1) * 1.6);
-        c.globalAlpha = 0.75;
+        c.lineWidth = Math.max(1.2, Math.log10((e.bytes || 1) + 1) * 1.3);
+        c.globalAlpha = 0.42;
         c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke();
         c.globalAlpha = 1;
       });
       nodes.forEach((n) => {
-        const r = 10 + Math.sqrt((n.bytes || 1) / maxB) * 18;
-        n.r = r;
         c.beginPath();
-        c.arc(n.x, n.y, r, 0, Math.PI * 2);
+        c.arc(n.x, n.y, n.r, 0, Math.PI * 2);
         c.fillStyle = n.alerts ? "#ff7a45" : (n.internal === false ? "#c9a0ff" : "#3dd6d0");
         if (n.kind === "service") c.fillStyle = "#7aa2ff";
         if (n.kind === "zone") c.fillStyle = "#f5c542";
         c.fill();
-        c.fillStyle = "#e8eefc";
-        c.font = "15px IBM Plex Sans, sans-serif";
-        c.fillText(n.label || n.id, n.x + r + 4, n.y + 5);
+        let lx = n.x, ly = n.y + 5, align = n.labAlign;
+        if (n.hub || n.labAlign === "center") {
+          ly = n.y + n.r + 20;
+          align = "center";
+        } else if (n.labAlign === "left") {
+          lx = n.x + n.r + 8;
+        } else {
+          lx = n.x - n.r - 8;
+        }
+        paintLabel(c, n.short, lx, ly, align);
       });
     }
-    step();
+    seed();
+    separate();
     draw();
     function hit(ev) {
       const r = el.getBoundingClientRect();
       const x = ev.clientX - r.left, y = ev.clientY - r.top;
-      return nodes.find((n) => (n.x - x) ** 2 + (n.y - y) ** 2 <= (n.r + 4) ** 2);
+      return nodes.find((n) => (n.x - x) ** 2 + (n.y - y) ** 2 <= (n.r + 10) ** 2)
+        || nodes.find((n) => {
+          const lx = n.labAlign === "left" ? n.x + n.r + 8
+            : n.labAlign === "right" ? n.x - n.r - 8 - n.labW
+            : n.x - n.labW / 2;
+          const ly = (n.hub || n.labAlign === "center") ? n.y + n.r + 20 : n.y;
+          return x >= lx && x <= lx + n.labW && Math.abs(y - ly) < 14;
+        });
     }
     el.onmousemove = (ev) => {
       const n = hit(ev);
-      if (n) showTip(ev, `${n.label}  bytes ${n.bytes || 0}  alerts ${n.alerts || 0}`);
+      if (n) showTip(ev, `${n.label || n.id}  bytes ${n.bytes || 0}  alerts ${n.alerts || 0}`);
       else hideTip();
     };
     el.onmouseleave = hideTip;
@@ -350,12 +448,7 @@
       }
     };
     return {
-      reset() { nodes.forEach((n, i) => {
-        const ang = (i / Math.max(1, nodes.length)) * Math.PI * 2;
-        n.x = w / 2 + Math.cos(ang) * Math.min(w, h) * 0.32;
-        n.y = h / 2 + Math.sin(ang) * Math.min(w, h) * 0.32;
-        n.vx = n.vy = 0;
-      }); step(); draw(); },
+      reset() { seed(); separate(); draw(); },
     };
   }
   g.Charts = { line, area, bars, pie, stacked, timeline, sankey, graph, PROTO };

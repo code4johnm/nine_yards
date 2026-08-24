@@ -123,6 +123,28 @@ def app_from_ports(sport: int | None, dport: int | None, proto: str | None) -> s
     return "unknown"
 
 
+def clean_hostname(name: str | None) -> str | None:
+    """Normalize an observed DNS/SNI/HTTP name. Returns None if it is not a hostname."""
+    if not name:
+        return None
+    name = str(name).strip().rstrip(".").lower()
+    if not name or len(name) > 253:
+        return None
+    if "://" in name:
+        name = name.split("://", 1)[1]
+    name = name.split("/")[0].split("?")[0].split(":")[0].strip()
+    if not name:
+        return None
+    try:
+        ipaddress.ip_address(name)
+        return None
+    except ValueError:
+        pass
+    if any(c.isspace() or c in "<>\"'" for c in name):
+        return None
+    return name
+
+
 def is_private_ip(ip: str | None) -> bool:
     if not ip:
         return True

@@ -6,7 +6,7 @@ import struct
 from typing import Any
 
 from .pcapio import extract_sni, ja3_from_client_hello
-from .util import PROTO_IP, app_from_ports, flags_str
+from .util import PROTO_IP, app_from_ports, clean_hostname, flags_str
 
 ETH_IPV4 = 0x0800
 ETH_IPV6 = 0x86DD
@@ -69,6 +69,54 @@ def _dns_qname(payload: bytes) -> str | None:
     return name or None
 
 
+def _dns_answers(payload: bytes) -> list[tuple[str, str]]:
+    """Return (ip, owner-name) pairs from DNS A/AAAA answers."""
+    if len(payload) < 12:
+        return []
+    qd = struct.unpack("!H", payload[4:6])[0]
+    an = struct.unpack("!H", payload[6:8])[0]
+    if an <= 0:
+        return []
+    pos = 12
+    for _ in range(qd):
+        _, pos = _parse_dns_name(payload, pos)
+        pos += 4
+        if pos > len(payload):
+            return []
+    out: list[tuple[str, str]] = []
+    for _ in range(min(an, 24)):
+        name, pos = _parse_dns_name(payload, pos)
+        if pos + 10 > len(payload):
+            break
+        rtype, _rclass, _ttl, rdlen = struct.unpack("!HHIH", payload[pos : pos + 10])
+        pos += 10
+        if pos + rdlen > len(payload):
+            break
+        rdata = payload[pos : pos + rdlen]
+        pos += rdlen
+        host = clean_hostname(name)
+        if not host:
+            continue
+        if rtype == 1 and rdlen == 4:
+            out.append((_ipv4(rdata), host))
+        elif rtype == 28 and rdlen == 16:
+            out.append((_ipv6(rdata), host))
+    return out
+
+
+def _http_host(payload: bytes) -> str | None:
+    if not payload:
+        return None
+    try:
+        text = payload.split(b"\r\n\r\n", 1)[0].decode("ascii", "replace")
+    except Exception:
+        return None
+    for line in text.split("\r\n")[1:12]:
+        if line.lower().startswith("host:"):
+            return clean_hostname(line.split(":", 1)[1])
+    return None
+
+
 def _http_meta(payload: bytes) -> str | None:
     if not payload:
         return None
@@ -125,6 +173,8 @@ def parse_frame(
         "info": None,
         "ja3": None,
         "sni": None,
+        "http_host": None,
+        "dns_answers": [],
         "payload": b"",
         "tcp_seq": None,
         "tcp_ack": None,
@@ -184,6 +234,7 @@ def parse_frame(
             if meta:
                 rec["l7"] = "http"
                 rec["info"] = meta
+            rec["http_host"] = _http_host(payload)
         if rec["l7"] in ("https", "https-alt") or (payload[:1] == b"\x16"):
             sni = extract_sni(payload)
             ja3 = ja3_from_client_hello(payload)
@@ -204,6 +255,7 @@ def parse_frame(
             q = _dns_qname(payload)
             rec["l7"] = "dns"
             rec["info"] = q
+            rec["dns_answers"] = _dns_answers(payload)
     elif proto_num == 1 and len(l4) >= 4:  # ICMP
         rec["proto"] = "ICMP"
         rec["l7"] = "icmp"
@@ -216,6 +268,7 @@ def parse_frame(
 
     rec["payload_len"] = len(payload)
     rec["payload"] = payload
+    rec["dns_answers"] = rec.get("dns_answers") or []
     if store_payload and payload:
         rec["payload_hex"] = payload[:payload_max].hex()
         rec["payload_ascii"] = _ascii_preview(payload, payload_max)
@@ -296,12 +349,18 @@ def parse_tshark_line(line: str, fields: list[str]) -> dict[str, Any] | None:
         "info": info or None,
         "ja3": g("tls.handshake.ja3") or None,
         "sni": g("tls.handshake.extensions_server_name") or None,
+        "http_host": g("http.host") or None,
+        "dns_answers": [],
         "payload": b"",
         "tcp_seq": int(g("tcp.seq")) if g("tcp.seq").isdigit() else None,
         "tcp_ack": None,
         "payload_hex": None,
         "payload_ascii": None,
     }
+    qname = g("dns.qry.name")
+    for ans_ip in (g("dns.a"), g("dns.aaaa")):
+        if ans_ip and qname:
+            rec["dns_answers"].append((ans_ip.split(",")[0].strip(), qname))
     if rec["proto"] in ("TCP", "UDP", "ICMP", "ARP", "HTTP", "TLS", "DNS", "SSH"):
         if rec["proto"] in ("HTTP", "TLS", "SSH"):
             rec["l7"] = rec["proto"].lower()
@@ -310,6 +369,35 @@ def parse_tshark_line(line: str, fields: list[str]) -> dict[str, Any] | None:
             rec["l7"] = "dns"
             rec["proto"] = "UDP" if rec["ip_proto"] == 17 else rec["proto"]
     return rec
+
+
+def name_bindings(pkt: dict[str, Any]) -> list[tuple[str, str]]:
+    """IP → hostname pairs observed on this packet (SNI, HTTP Host, DNS A/AAAA)."""
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(ip: str | None, name: str | None) -> None:
+        host = clean_hostname(name)
+        addr = (ip or "").strip()
+        if not addr or not host:
+            return
+        key = (addr, host)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append((addr, host))
+
+    dst = pkt.get("dst_ip")
+    add(dst, pkt.get("sni"))
+    add(dst, pkt.get("http_host"))
+    info = pkt.get("info") or ""
+    if "host=" in info.lower() and dst:
+        for part in info.split():
+            if part.lower().startswith("host="):
+                add(dst, part.split("=", 1)[1])
+    for ip, name in pkt.get("dns_answers") or []:
+        add(ip, name)
+    return out
 
 
 TSHARK_FIELDS = [
@@ -332,6 +420,8 @@ TSHARK_FIELDS = [
     "tcp.seq",
     "tcp.analysis.retransmission",
     "dns.qry.name",
+    "dns.a",
+    "dns.aaaa",
     "http.host",
     "http.request.method",
     "http.request.uri",

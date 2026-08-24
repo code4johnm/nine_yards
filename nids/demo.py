@@ -16,7 +16,7 @@ from .config import load_settings
 from .db import Store
 from .detect import Detector
 from .flows import FlowTable
-from .parser import parse_frame
+from .parser import name_bindings, parse_frame
 from .pcapio import (
     arp_request,
     dns_query,
@@ -411,6 +411,8 @@ def ingest_frames(store: Store, frames: list[tuple[float, bytes]], payload: bool
         batch.append(pkt)
         store.bump_host(pkt.get("src_ip"), ts, "out", pkt["length"], pkt.get("dst_port"))
         store.bump_host(pkt.get("dst_ip"), ts, "in", pkt["length"], pkt.get("src_port"))
+        for ip, host in name_bindings(pkt):
+            store.set_host_tldn(ip, host)
         for a in det.on_packet(pkt):
             a["flow_id"] = fl.db_id
             store.insert_alert(a)

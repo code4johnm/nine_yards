@@ -85,6 +85,15 @@
       ts_from: state.tsFrom, ts_to: state.tsTo,
     }, extra || {});
   }
+  function fmtAddr(ip, tldn) {
+    if (!ip) return "—";
+    return tldn ? `${ip} | ${tldn}` : ip;
+  }
+  function fmtAddrPort(ip, port, tldn) {
+    if (!ip) return "—";
+    const core = (port != null && port !== "") ? `${ip}:${port}` : ip;
+    return tldn ? `${core} | ${tldn}` : core;
+  }
   function pill(sev) {
     sev = (sev || "info").toLowerCase();
     return `<span class="pill ${esc(sev)}">${esc(sev)}</span>`;
@@ -148,7 +157,9 @@
   }
   function go(page, inner) {
     state.page = page;
-    state.inner = inner || tabSpec(page).inner[0][0];
+    const spec = tabSpec(page);
+    if (!inner || !spec.inner.some((i) => i[0] === inner)) inner = spec.inner[0][0];
+    state.inner = inner;
     state.offset = 0;
     writeHash();
     drawTabs();
@@ -177,7 +188,7 @@
     const max = Math.max(1, ...items.map((i) => Number(i[valKey] || 0)));
     return items.map((i) => {
       const n = Number(i[valKey] || 0);
-      return `<div class="bar-row"><span class="lab mono" title="${esc(i[nameKey])}">${esc(i[nameKey])}</span>
+      return `<div class="bar-row"><span class="lab mono" title="${esc(i[nameKey])}">${esc(i.name || i[nameKey])}</span>
         <div class="track"><div class="fill" style="width:${Math.round((n / max) * 100)}%"></div></div>
         <span class="mono">${fmtNum(n)}</span></div>`;
     }).join("") || `<div class="empty">No series.</div>`;
@@ -216,10 +227,10 @@
     const pkts = await API.packets({ flow_id: p.flow_id, limit: 12, range: "7d" });
     const swim = (pkts.rows || []).map((r) => {
       const dir = r.src_ip === p.src_ip ? "→" : "←";
-      return `<div class="swim"><span class="mono">${esc(r.src_ip)}</span><span class="arr">${dir} ${esc(r.tcp_flags_s || r.proto)} ${esc(r.length)}B</span><span class="mono">${esc(r.dst_ip)}</span></div>`;
+      return `<div class="swim"><span class="mono">${esc(fmtAddr(r.src_ip, r.src_tldn))}</span><span class="arr">${dir} ${esc(r.tcp_flags_s || r.proto)} ${esc(r.length)}B</span><span class="mono">${esc(fmtAddr(r.dst_ip, r.dst_tldn))}</span></div>`;
     }).join("");
     openDrawer("Packet " + id, `
-      <p>${esc(p.src_ip)}:${p.src_port ?? ""} → ${esc(p.dst_ip)}:${p.dst_port ?? ""} · ${esc(p.proto)} · ${esc(p.l7 || "")}</p>
+      <p>${esc(fmtAddrPort(p.src_ip, p.src_port, p.src_tldn))} → ${esc(fmtAddrPort(p.dst_ip, p.dst_port, p.dst_tldn))} · ${esc(p.proto)} · ${esc(p.l7 || "")}</p>
       <h2>Conversation</h2>${swim || "<p class='hint'>No related packets.</p>"}
       <canvas id="d-mini" height="160"></canvas>
       <pre>${esc(JSON.stringify(p, null, 2))}</pre>`);
@@ -231,10 +242,10 @@
     const pkts = await API.packets({ flow_id: id, limit: 16, range: "7d" });
     const swim = (pkts.rows || []).map((r) => {
       const dir = r.src_ip === f.src_ip ? "→" : "←";
-      return `<div class="swim"><span class="mono">${esc(r.src_ip)}</span><span class="arr">${dir} ${esc(r.tcp_flags_s || r.proto)}</span><span class="mono">${esc(r.dst_ip)}</span></div>`;
+      return `<div class="swim"><span class="mono">${esc(fmtAddr(r.src_ip, r.src_tldn))}</span><span class="arr">${dir} ${esc(r.tcp_flags_s || r.proto)}</span><span class="mono">${esc(fmtAddr(r.dst_ip, r.dst_tldn))}</span></div>`;
     }).join("");
     openDrawer("Flow " + id, `
-      <p class="mono">${esc(f.src_ip)}:${f.src_port ?? ""} → ${esc(f.dst_ip)}:${f.dst_port ?? ""}</p>
+      <p class="mono">${esc(fmtAddrPort(f.src_ip, f.src_port, f.src_tldn))} → ${esc(fmtAddrPort(f.dst_ip, f.dst_port, f.dst_tldn))}</p>
       <p>${fmtNum(f.total_bytes)} bytes · ${esc(f.tcp_state || "")} · ${esc(f.l7 || "")}</p>
       <h2>Sequence</h2>${swim}
       <canvas id="d-mini" height="160"></canvas>`);
@@ -278,13 +289,9 @@
     }
     if (state.inner === "capture") {
       const h = await API.health();
-      main.innerHTML = `${kpiRow(kpis, ts)}
-        <div class="panel"><h2>Capture path</h2>${pathDiagram()}</div>
-        <div class="grid-2">
-          <div class="panel"><h2>Sensor</h2><pre>${esc(JSON.stringify({ iface: h.iface, capture: h.capture, drops: h.iface_stats }, null, 2))}</pre></div>
-          <div class="panel"><h2>Drops / errors</h2><canvas id="c-drop" height="160"></canvas></div>
-        </div>`;
-      Charts.area("#c-drop", ts.drops || ts.pps, "#ff7a45");
+      main.innerHTML = sensorPanel(h, kpis) +
+        `<div class="panel"><h2>Drops / packet rate</h2><canvas id="c-drop" height="160"></canvas></div>`;
+      Charts.area("#c-drop", ts.pps || [], "#ff7a45");
       return;
     }
     main.innerHTML = `${kpiRow(kpis, ts)}
@@ -293,7 +300,7 @@
         <div class="panel span-4"><h2>Protocol mix</h2><canvas id="c-pie" height="180"></canvas></div>
         <div class="panel span-6"><h2>Alert rate</h2><canvas id="c-al" height="160"></canvas></div>
         <div class="panel span-6"><h2>New flows</h2><canvas id="c-fl" height="160"></canvas></div>
-        <div class="panel span-12"><h2>L3 conversations</h2><canvas id="c-g" height="560"></canvas>
+        <div class="panel span-12 map-panel"><h2>L3 conversations</h2><canvas id="c-g" class="map-canvas" height="720"></canvas>
           <div class="legend"><span><i style="background:#3dd6d0"></i>Internal</span><span><i style="background:#c9a0ff"></i>External</span>
           <span><i style="background:#ff7a45"></i>Has alerts</span><span><i style="background:#7aa2ff"></i>TCP</span>
           <span><i style="background:#3dd6d0"></i>UDP</span><button id="g-reset" class="ghost">Reset layout</button></div></div>
@@ -325,8 +332,8 @@
         <td>${pill(a.severity)}${a.is_demo ? ' <span class="pill demo">DEMO</span>' : ""}</td>
         <td class="mono">${esc(fmtTs(a.last_seen))}</td>
         <td class="linkish" data-alert='${esc(JSON.stringify(a))}'>${esc(a.signature)}</td>
-        <td class="mono linkish" data-ip="${esc(a.src_ip || "")}">${esc(a.src_ip || "—")}</td>
-        <td class="mono">${esc(a.dst_ip || "—")}</td>
+        <td class="mono linkish" data-ip="${esc(a.src_ip || "")}">${esc(fmtAddr(a.src_ip, a.src_tldn))}</td>
+        <td class="mono">${esc(fmtAddr(a.dst_ip, a.dst_tldn))}</td>
         <td class="mono">${esc(a.count)}</td>`),
       "No alerts in range.");
   }
@@ -358,8 +365,8 @@
     }
     if (state.inner === "conversation") {
       const g = await API.graph(params({ kind: "conversations" }));
-      main.innerHTML = `<div class="panel"><h2>Conversations from packets/flows</h2>
-        <canvas id="c-g" height="560"></canvas>
+      main.innerHTML = `<div class="panel map-panel"><h2>Conversations from packets/flows</h2>
+        <canvas id="c-g" class="map-canvas" height="720"></canvas>
         <button id="g-reset" class="ghost">Reset layout</button>
         <label class="chk"><input type="checkbox" id="more" ${state.showMore ? "checked" : ""} /> Show more nodes</label></div>`;
       state.graphCtl = Charts.graph("#c-g", g, { onNode: (n) => filterHost(n.id), onEdge: (e) => e.flow_id && inspectFlow(e.flow_id) });
@@ -372,7 +379,7 @@
         ${table(["Time", "5-tuple", "Proto", "Len", "Info"],
           data.rows.slice(0, 12).map((p) => `
             <td class="mono">${esc(fmtTs(p.ts))}</td>
-            <td class="mono linkish" data-pkt="${p.id}">${esc(p.src_ip)}:${p.src_port ?? ""} → ${esc(p.dst_ip)}:${p.dst_port ?? ""}</td>
+            <td class="mono linkish" data-pkt="${p.id}">${esc(fmtAddrPort(p.src_ip, p.src_port, p.src_tldn))} → ${esc(fmtAddrPort(p.dst_ip, p.dst_port, p.dst_tldn))}</td>
             <td>${esc(p.proto)}</td><td>${esc(p.length)}</td><td>${esc(p.info || p.sni || p.l7 || "")}</td>`),
           "No packets.")}</div>`;
       main.querySelectorAll("[data-pkt]").forEach((el) => el.addEventListener("click", () => inspectPacket(el.dataset.pkt)));
@@ -384,8 +391,8 @@
         ${table(["Time", "Src", "Dst", "Proto", "Len", "Flags", "L7"],
           data.rows.map((p) => `
             <td class="mono">${esc(fmtTs(p.ts))}</td>
-            <td class="mono">${esc(p.src_ip || "")}${p.src_port != null ? ":" + p.src_port : ""}</td>
-            <td class="mono">${esc(p.dst_ip || "")}${p.dst_port != null ? ":" + p.dst_port : ""}</td>
+            <td class="mono">${esc(fmtAddrPort(p.src_ip, p.src_port, p.src_tldn))}</td>
+            <td class="mono">${esc(fmtAddrPort(p.dst_ip, p.dst_port, p.dst_tldn))}</td>
             <td>${esc(p.proto)}</td><td class="mono">${esc(p.length)}</td>
             <td class="mono">${esc(p.tcp_flags_s || "")}</td>
             <td class="linkish" data-pkt="${p.id}">${esc(p.l7 || "")} ${esc(p.info || "")}</td>`),
@@ -416,11 +423,10 @@
     }
     const data = await API.flows(params(extra));
     const g = await API.graph(params({ kind: "conversations" }));
-    main.innerHTML = `<section class="grid-12">
-      <div class="panel span-5"><h2>Volume graph</h2><canvas id="c-g" height="560"></canvas>
+    main.innerHTML = `<div class="panel map-panel"><h2>Volume graph</h2>
+        <canvas id="c-g" class="map-canvas" height="720"></canvas>
         <button id="g-reset" class="ghost">Reset layout</button></div>
-      <div class="panel span-7"><h2>Flows ${fmtNum(data.total)}</h2>${flowTable(data.rows)}${pager(data)}</div>
-    </section>`;
+      <div class="panel"><h2>Flows ${fmtNum(data.total)}</h2>${flowTable(data.rows)}${pager(data)}</div>`;
     state.graphCtl = Charts.graph("#c-g", g, { onNode: (n) => filterHost(n.id), onEdge: (e) => e.flow_id && inspectFlow(e.flow_id) });
     $("#g-reset").onclick = () => state.graphCtl.reset();
     bindFlows();
@@ -430,7 +436,7 @@
     return table(["Start", "Orig → Resp", "Proto", "Bytes", "Dur", "State", "L7"],
       rows.map((f) => `
         <td class="mono">${esc(fmtTs(f.start_ts))}</td>
-        <td class="mono linkish" data-flow="${f.id}">${esc(f.src_ip)}:${esc(f.src_port ?? "")} → ${esc(f.dst_ip)}:${esc(f.dst_port ?? "")}</td>
+        <td class="mono linkish" data-flow="${f.id}">${esc(fmtAddrPort(f.src_ip, f.src_port, f.src_tldn))} → ${esc(fmtAddrPort(f.dst_ip, f.dst_port, f.dst_tldn))}</td>
         <td>${esc(f.proto)}</td><td class="mono">${fmtNum(f.total_bytes)}</td>
         <td class="mono">${Number(f.duration || 0).toFixed(2)}s</td>
         <td>${esc(f.tcp_state || "")}</td><td>${esc(f.l7 || "")}</td>`),
@@ -492,22 +498,25 @@
     const data = await API.hosts(params({ limit: 200 }));
     const g = await API.graph(params({ kind: "hosts" }));
     if (state.inner === "relations") {
-      main.innerHTML = `<div class="panel"><h2>Host relationships</h2><canvas id="c-g" height="560"></canvas>
+      main.innerHTML = `<div class="panel map-panel"><h2>Host relationships</h2>
+        <canvas id="c-g" class="map-canvas" height="720"></canvas>
         <button id="g-reset" class="ghost">Reset layout</button></div>`;
       state.graphCtl = Charts.graph("#c-g", g, { onNode: (n) => filterHost(n.id) });
       $("#g-reset").onclick = () => state.graphCtl.reset();
       return;
     }
-    main.innerHTML = `<section class="grid-12">
-      <div class="panel span-5"><h2>Map</h2><canvas id="c-g" height="560"></canvas></div>
-      <div class="panel span-7"><h2>Hosts ${fmtNum(data.total)}</h2>
-        ${table(["IP", "Out", "In", "Alerts"],
+    main.innerHTML = `<div class="panel map-panel"><h2>Map</h2>
+        <canvas id="c-g" class="map-canvas" height="720"></canvas>
+        <button id="g-reset" class="ghost">Reset layout</button></div>
+      <div class="panel"><h2>Hosts ${fmtNum(data.total)}</h2>
+        ${table(["IP | TLDN", "Out", "In", "Alerts"],
           data.rows.map((h) => `
-            <td class="mono linkish" data-ip="${esc(h.ip)}">${esc(h.ip)}</td>
+            <td class="mono linkish" data-ip="${esc(h.ip)}">${esc(fmtAddr(h.ip, h.tldn))}</td>
             <td class="mono">${fmtNum(h.bytes_out)}</td><td class="mono">${fmtNum(h.bytes_in)}</td>
             <td class="mono">${esc(h.alert_count)}</td>`), "No hosts.")}
-      </div></section>`;
-    Charts.graph("#c-g", g, { onNode: (n) => filterHost(n.id) });
+      </div>`;
+    state.graphCtl = Charts.graph("#c-g", g, { onNode: (n) => filterHost(n.id) });
+    $("#g-reset")?.addEventListener("click", () => state.graphCtl && state.graphCtl.reset());
     main.querySelectorAll("[data-ip]").forEach((el) => el.addEventListener("click", () => filterHost(el.dataset.ip)));
   }
 
@@ -543,7 +552,7 @@
         return;
       }
       main.innerHTML = `<div class="panel empty">Public IPs present, but GeoLite2 MMDB is not installed. Geo map stays stubbed on purpose.</div>
-        <div class="panel"><h2>Internal vs external</h2><canvas id="c-g" height="560"></canvas></div>`;
+        <div class="panel map-panel"><h2>Internal vs external</h2><canvas id="c-g" class="map-canvas" height="720"></canvas></div>`;
       Charts.graph("#c-g", g, { onNode: (n) => filterHost(n.id) });
       return;
     }
@@ -558,7 +567,7 @@
           <div class="box">SQLite</div><span class="arrow">→</span>
           <div class="box">UI 127.0.0.1</div>
         </div></div>
-        <div class="panel"><h2>Internal / external</h2><canvas id="c-g" height="560"></canvas>
+        <div class="panel map-panel"><h2>Internal / external</h2><canvas id="c-g" class="map-canvas" height="720"></canvas>
           <button id="g-reset" class="ghost">Reset layout</button></div>`;
       state.graphCtl = Charts.graph("#c-g", g, { onNode: (n) => filterHost(n.id) });
       $("#g-reset").onclick = () => state.graphCtl.reset();
@@ -566,8 +575,8 @@
     }
     const g = await API.graph(params({ kind, show_more: state.showMore }));
     const title = { l3: "L3 conversation graph", l4: "L4 service map", hmap: "Host relationship map" }[state.inner];
-    main.innerHTML = `<div class="panel"><h2>${title}</h2>
-      <canvas id="c-g" height="560"></canvas>
+    main.innerHTML = `<div class="panel map-panel"><h2>${title}</h2>
+      <canvas id="c-g" class="map-canvas" height="720"></canvas>
       <div class="legend">
         <span><i style="background:#3dd6d0"></i>Internal host</span>
         <span><i style="background:#c9a0ff"></i>External</span>
@@ -576,12 +585,15 @@
         <label class="chk"><input type="checkbox" id="more" ${state.showMore ? "checked" : ""} /> Show more (top 60)</label>
         <button id="g-reset" class="ghost">Reset layout</button>
       </div></div>
-      <div class="panel"><h2>Source → destination</h2><canvas id="c-sk" height="420"></canvas></div>`;
+      <div class="panel map-panel"><h2>Source → destination</h2><canvas id="c-sk" class="sankey-canvas" height="560"></canvas></div>`;
     state.graphCtl = Charts.graph("#c-g", g, {
       onNode: (n) => filterHost(n.id.replace(/^svc:/, "")),
       onEdge: (e) => e.flow_id && inspectFlow(e.flow_id),
     });
-    Charts.sankey("#c-sk", g.edges, { onNode: (id) => filterHost(String(id).replace(/^svc:/, "")) });
+    Charts.sankey("#c-sk", g.edges, {
+      nodes: g.nodes,
+      onNode: (id) => filterHost(String(id).replace(/^svc:/, "")),
+    });
     $("#g-reset").onclick = () => state.graphCtl.reset();
     $("#more").onchange = () => { state.showMore = $("#more").checked; render(); };
   }
@@ -622,18 +634,71 @@
     Charts.area("#d", ts.alerts.points, "#ff7a45", { onBrush: brushRange });
   }
 
+  function sensorPanel(h, kpis) {
+    const cap = h.capture || {};
+    const st = h.sensor || {};
+    const nic = h.iface_stats || {};
+    const running = !!(cap.running);
+    const err = cap.last_error || st.last_error || "";
+    const kv = (label, value) =>
+      `<div class="bar-row"><span class="lab">${esc(label)}</span><span class="mono">${esc(value)}</span></div>`;
+    return `
+      ${kpiRow({
+        pps: kpis?.pps || 0,
+        bps: kpis?.bps || 0,
+        active_flows: kpis?.active_flows || 0,
+        alert_rate: kpis?.alert_rate || 0,
+        unique_hosts: kpis?.unique_hosts || 0,
+        drops: nic.rx_dropped || cap.drops || kpis?.drops || 0,
+      }, { pps: [], flows: [], alerts: [] })}
+      <div class="panel"><h2>Data path</h2>${pathDiagram()}</div>
+      ${err ? `<div class="banner error">${esc(err)}</div>` : ""}
+      <section class="grid-2">
+        <div class="panel">
+          <h2>Sensor</h2>
+          <p>Status: <span class="pill ${running ? "high" : "info"}">${esc(running ? "live" : (st.status || cap.source || "idle"))}</span>
+            ${h.demo_loaded ? '<span class="pill demo">DEMO</span>' : ""}</p>
+          ${kv("Interface", h.iface || cap.iface || st.iface || "—")}
+          ${kv("Source", cap.source || st.source || "idle")}
+          ${kv("PID", cap.pid || st.pid || "—")}
+          ${kv("Started", fmtTs(cap.started_at || st.started_at))}
+          ${kv("Capture packets", fmtNum(cap.packets || st.packets))}
+          ${kv("Capture drops", fmtNum(cap.drops || st.drops || 0))}
+          ${kv("Store PCAP", cap.store_pcap ? "yes" : "no")}
+          ${kv("Bind", h.bind || "127.0.0.1")}
+        </div>
+        <div class="panel">
+          <h2>Interface counters</h2>
+          ${kv("RX packets", fmtNum(nic.rx_packets))}
+          ${kv("RX bytes", fmtNum(nic.rx_bytes))}
+          ${kv("RX dropped", fmtNum(nic.rx_dropped))}
+          ${kv("RX errors", fmtNum(nic.rx_errors))}
+          ${kv("TX packets", fmtNum(nic.tx_packets))}
+          <h2>Database</h2>
+          ${kv("Packets", fmtNum(h.packets))}
+          ${kv("Flows", fmtNum(h.flows))}
+          ${kv("Alerts", fmtNum(h.alerts))}
+          ${kv("DB size", fmtNum(h.db_bytes) + " B")}
+        </div>
+      </section>`;
+  }
+
   async function renderHealth() {
-    const h = await API.health();
+    const spec = tabSpec("health");
+    if (!spec.inner.some((i) => i[0] === state.inner)) state.inner = "sensor";
+    const [h, kpis] = await Promise.all([API.health(), API.kpis(params())]);
     if (state.inner === "tools") {
-      main.innerHTML = `<div class="panel"><h2>Local tools</h2><pre>${esc(JSON.stringify(h.tools, null, 2))}</pre></div>`;
+      const tools = h.tools || {};
+      const rows = Object.entries(tools).map(([name, t]) => {
+        const ok = t && t.present;
+        return `<div class="bar-row"><span class="lab">${esc(name)}</span>
+          <span class="pill ${ok ? "low" : "high"}">${ok ? "present" : "missing"}</span>
+          <span class="mono">${esc((t && (t.version || t.path)) || "—")}</span></div>`;
+      }).join("");
+      main.innerHTML = `<div class="panel"><h2>Local tools</h2>${rows || "<p class='hint'>No tool inventory.</p>"}</div>`;
       return;
     }
-    main.innerHTML = `${kpiRow({ pps: 0, bps: 0, active_flows: 0, alert_rate: 0, unique_hosts: 0, drops: h.iface_stats?.rx_dropped }, { pps: [], flows: [], alerts: [] })}
-      <div class="panel"><h2>Path</h2>${pathDiagram()}</div>
-      <div class="grid-2">
-        <div class="panel"><h2>Sensor</h2><pre>${esc(JSON.stringify({ iface: h.iface, capture: h.capture, stats: h.iface_stats, demo: h.demo_loaded }, null, 2))}</pre></div>
-        <div class="panel"><h2>Database</h2><p>packets ${fmtNum(h.packets)} · flows ${fmtNum(h.flows)} · alerts ${fmtNum(h.alerts)} · ${fmtNum(h.db_bytes)} bytes</p></div>
-      </div>`;
+    main.innerHTML = sensorPanel(h, kpis);
   }
 
   async function renderSettings() {

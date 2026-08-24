@@ -99,12 +99,20 @@ a { color: var(--accent2); text-decoration: none; }
   width: 100%;
   max-width: 100%;
 }
-/* Conversation / map / sankey fields: full content width + taller so nodes are not clipped. */
-#c-g {
-  height: 560px;
+/* Map / conversation / sankey: full content width, tall enough for IP labels. */
+#c-g,
+.map-canvas {
+  height: 72vh;
+  min-height: 720px;
 }
-#c-sk {
-  height: 420px;
+#c-sk,
+.sankey-canvas {
+  height: 58vh;
+  min-height: 560px;
+}
+.map-panel {
+  grid-column: 1 / -1;
+  min-width: 0;
 }
 .grid-2 { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; }
 .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
@@ -121,7 +129,7 @@ a { color: var(--accent2); text-decoration: none; }
   color: var(--muted); font-weight: 700;
 }
 .panel-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px; }
-.table-wrap { overflow: auto; max-height: 420px; }
+.table-wrap { overflow: auto; max-height: 560px; }
 table { width: 100%; border-collapse: collapse; font-size: 15px; }
 th, td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; height: var(--row-h); }
 th { color: var(--muted); font-weight: 700; position: sticky; top: 0; background: var(--panel); z-index: 1; }
@@ -159,7 +167,7 @@ pre {
   border: 1px solid var(--line);
 }
 .bar-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; font-size: 15px; }
-.bar-row .lab { width: 140px; color: var(--text); overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.bar-row .lab { width: 260px; color: var(--text); overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
 .bar-row .track { flex: 1; height: 12px; background: #0b1118; border-radius: 99px; overflow: hidden; }
 .bar-row .fill { height: 100%; background: var(--accent); }
 .heatmap { display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 6px; }
@@ -198,4 +206,6 @@ button.live-on { border-color: var(--crit); color: var(--crit); background: #2a1
   .kpis, .grid-2, .grid-3, .grid-12 { grid-template-columns: 1fr; }
   .span-8, .span-6, .span-4, .span-12 { grid-column: span 1; }
   .kpi .v { font-size: 36px; }
+  #c-g, .map-canvas { height: 64vh; min-height: 560px; }
+  #c-sk, .sankey-canvas { height: 52vh; min-height: 440px; }
 }

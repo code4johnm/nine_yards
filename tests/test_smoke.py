@@ -12,8 +12,8 @@ sys.path.insert(0, str(ROOT))
 
 from nids.db import Store
 from nids.demo import generate_frames, ingest_frames, write_sample_files
-from nids.parser import parse_frame
-from nids.pcapio import ja3_from_client_hello, tls_client_hello
+from nids.parser import name_bindings, parse_frame
+from nids.pcapio import dns_response, ethernet, ja3_from_client_hello, tcp, tls_client_hello, udp
 
 
 class DemoSmoke(unittest.TestCase):
@@ -33,6 +33,24 @@ class DemoSmoke(unittest.TestCase):
         self.assertGreater(parsed, 100)
         self.assertTrue({"TCP", "UDP", "ICMP", "ARP"} <= protos)
         self.assertGreater(vlan, 0)
+
+    def test_dns_tldn_binding(self) -> None:
+        frame = ethernet(
+            "02:50:01:00:00:30", "02:50:01:00:00:10", 0x0800,
+            udp("10.50.1.30", "10.50.1.10", 53, 40000, dns_response("www.lab.example", "10.50.1.20")),
+        )
+        pkt = parse_frame(1.0, frame)
+        self.assertIsNotNone(pkt)
+        self.assertIn(("10.50.1.20", "www.lab.example"), name_bindings(pkt))
+
+    def test_sni_tldn_binding(self) -> None:
+        frame = ethernet(
+            "02:50:01:00:00:10", "02:00:00:00:00:50", 0x0800,
+            tcp("10.50.1.10", "203.0.113.10", 52000, 443, 1, 1, 0x18, tls_client_hello("update.lab.example")),
+        )
+        pkt = parse_frame(1.0, frame)
+        self.assertIsNotNone(pkt)
+        self.assertIn(("203.0.113.10", "update.lab.example"), name_bindings(pkt))
 
     def test_ja3(self) -> None:
         hello = tls_client_hello("update.lab.example")

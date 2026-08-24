@@ -14,7 +14,7 @@ from .db import Store
 from .detect import Detector
 from .flows import FlowTable
 from .pcapio import read_pcap
-from .parser import parse_frame
+from .parser import name_bindings, parse_frame
 from .sensors import SensorHub
 from .util import iface_stats
 
@@ -105,6 +105,8 @@ class Engine:
             )
         self.store.bump_host(pkt.get("src_ip"), ts, "out", length, pkt.get("dst_port"))
         self.store.bump_host(pkt.get("dst_ip"), ts, "in", length, pkt.get("src_port"))
+        for ip, host in name_bindings(pkt):
+            self.store.set_host_tldn(ip, host)
         for a in self.detect.on_packet(pkt):
             a["flow_id"] = fl.db_id
             a["packet_id"] = pid
