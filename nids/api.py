@@ -18,7 +18,7 @@ from .config import Settings
 from .db import Store, serialize_row
 from .detect import scan_like_sql_hint
 from .engine import Engine
-from .util import SEVERITY_ORDER, flags_str, iface_stats, iso, list_ifaces, parse_range, tool_versions, zscore
+from .util import SEVERITY_ORDER, flags_str, iface_stats, iso, is_private_ip, list_ifaces, parse_range, tool_versions, zscore
 
 BPF_PRESETS = [
     {"id": "all", "label": "All traffic", "bpf": ""},
@@ -437,7 +437,53 @@ def build_app(settings: Settings, store: Store, engine: Engine, lifespan=None) -
             "top_alert_dst": victims,
             "direction": inbound,
             "interarrival": iat,
+            "alert_timeline": _alert_timeline(store, t0, t1),
+            "proto_stack": _proto_stack(store, t0, t1),
         }
+
+    @api.get("/graph")
+    def graph(
+        kind: str = "conversations",
+        range: str = "15m",
+        ts_from: float | None = None,
+        ts_to: float | None = None,
+        ip: str | None = None,
+        limit: int = 30,
+        show_more: bool = False,
+    ) -> dict[str, Any]:
+        t0, t1 = _window(range, ts_from, ts_to)
+        cap = 60 if show_more else min(max(limit, 8), 30)
+        where = ["start_ts <= ? AND end_ts >= ?"]
+        args: list[Any] = [t1, t0]
+        if ip:
+            where.append("(src_ip=? OR dst_ip=?)")
+            args.extend([ip, ip])
+        w = " AND ".join(where)
+        rows = store.query(
+            f"""SELECT src_ip, dst_ip, proto, COALESCE(l7, proto) AS l7, dst_port,
+                       SUM(bytes+bytes_rev) AS bytes, SUM(packets+packets_rev) AS packets,
+                       COUNT(*) AS n, MIN(id) AS flow_id
+                FROM flows WHERE {w}
+                GROUP BY src_ip, dst_ip, proto, l7, dst_port
+                ORDER BY bytes DESC LIMIT 200""",
+            args,
+        )
+        alerts = store.query(
+            "SELECT src_ip, dst_ip, COUNT(*) AS n FROM alerts WHERE last_seen BETWEEN ? AND ? GROUP BY src_ip, dst_ip",
+            (t0, t1),
+        )
+        alert_n: dict[str, int] = {}
+        for a in alerts:
+            for key in (a.get("src_ip"), a.get("dst_ip")):
+                if key:
+                    alert_n[key] = alert_n.get(key, 0) + int(a["n"] or 0)
+        if kind == "services":
+            return _graph_services(rows, alert_n, cap)
+        if kind == "subnet":
+            return _graph_subnet(rows, alert_n, cap)
+        if kind == "hosts":
+            return _graph_hosts(rows, alert_n, cap)
+        return _graph_conversations(rows, alert_n, cap)
 
     @api.get("/hosts")
     def hosts(
@@ -699,6 +745,171 @@ def _size_hist(store: Store, t0: float, t1: float) -> list[dict[str, Any]]:
         if not placed:
             counts[-1] += 1
     return [{"bucket": labels[i], "n": counts[i]} for i in range(len(labels))]
+
+
+def _alert_timeline(store: Store, t0: float, t1: float) -> list[dict[str, Any]]:
+    span = max(1.0, t1 - t0)
+    buckets = 24
+    width = span / buckets
+    out = [{"t": t0 + (i + 0.5) * width, **{s: 0 for s in SEVERITY_ORDER}} for i in range(buckets)]
+    rows = store.query("SELECT ts, severity FROM alerts WHERE last_seen BETWEEN ? AND ?", (t0, t1))
+    for r in rows:
+        i = min(buckets - 1, max(0, int((r["ts"] - t0) / width)))
+        sev = (r.get("severity") or "info").lower()
+        if sev in out[i]:
+            out[i][sev] += 1
+    return out
+
+
+def _proto_stack(store: Store, t0: float, t1: float) -> list[dict[str, Any]]:
+    span = max(1.0, t1 - t0)
+    buckets = 24
+    width = span / buckets
+    keys = ("TCP", "UDP", "ICMP", "ARP", "OTHER")
+    out = [{"t": t0 + (i + 0.5) * width, **{k: 0 for k in keys}} for i in range(buckets)]
+    rows = store.query("SELECT ts, proto FROM packets WHERE ts BETWEEN ? AND ?", (t0, t1))
+    for r in rows:
+        i = min(buckets - 1, max(0, int((r["ts"] - t0) / width)))
+        p = (r.get("proto") or "OTHER").upper()
+        if p not in keys:
+            p = "OTHER"
+        out[i][p] += 1
+    return out
+
+
+def _node(ip: str, bytes_: int, pkts: int, alerts: int) -> dict[str, Any]:
+    return {
+        "id": ip,
+        "label": ip,
+        "bytes": bytes_,
+        "packets": pkts,
+        "alerts": alerts,
+        "internal": is_private_ip(ip),
+    }
+
+
+def _graph_conversations(rows: list[dict], alert_n: dict[str, int], cap: int) -> dict[str, Any]:
+    nodes: dict[str, dict[str, Any]] = {}
+    edges = []
+    for r in rows:
+        src, dst = r.get("src_ip"), r.get("dst_ip")
+        if not src or not dst:
+            continue
+        b = int(r.get("bytes") or 0)
+        p = int(r.get("packets") or 0)
+        for ip, bb, pp in ((src, b, p), (dst, b, p)):
+            n = nodes.setdefault(ip, _node(ip, 0, 0, alert_n.get(ip, 0)))
+            n["bytes"] += bb
+            n["packets"] += pp
+        edges.append({
+            "source": src,
+            "target": dst,
+            "bytes": b,
+            "packets": p,
+            "proto": r.get("proto") or "OTHER",
+            "l7": r.get("l7"),
+            "flow_id": r.get("flow_id"),
+        })
+    return _cap_graph(nodes, edges, cap, "conversations")
+
+
+def _graph_services(rows: list[dict], alert_n: dict[str, int], cap: int) -> dict[str, Any]:
+    nodes: dict[str, dict[str, Any]] = {}
+    edges = []
+    for r in rows:
+        src = r.get("src_ip")
+        svc = r.get("l7") or f"{r.get('proto')}:{r.get('dst_port')}"
+        if not src or not svc:
+            continue
+        b = int(r.get("bytes") or 0)
+        sid = f"svc:{svc}"
+        nodes.setdefault(src, _node(src, 0, 0, alert_n.get(src, 0)))
+        nodes[src]["bytes"] += b
+        sn = nodes.setdefault(sid, {"id": sid, "label": str(svc), "bytes": 0, "packets": 0, "alerts": 0, "kind": "service"})
+        sn["bytes"] += b
+        sn["packets"] += int(r.get("packets") or 0)
+        edges.append({
+            "source": src,
+            "target": sid,
+            "bytes": b,
+            "packets": int(r.get("packets") or 0),
+            "proto": r.get("proto") or "OTHER",
+            "flow_id": r.get("flow_id"),
+        })
+    return _cap_graph(nodes, edges, cap, "services")
+
+
+def _graph_hosts(rows: list[dict], alert_n: dict[str, int], cap: int) -> dict[str, Any]:
+    # undirected pairs
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in rows:
+        a, b = r.get("src_ip"), r.get("dst_ip")
+        if not a or not b:
+            continue
+        key = (a, b) if a <= b else (b, a)
+        m = merged.setdefault(key, {"source": key[0], "target": key[1], "bytes": 0, "packets": 0, "proto": r.get("proto"), "flow_id": r.get("flow_id")})
+        m["bytes"] += int(r.get("bytes") or 0)
+        m["packets"] += int(r.get("packets") or 0)
+    fake = [{"src_ip": v["source"], "dst_ip": v["target"], "bytes": v["bytes"], "packets": v["packets"], "proto": v["proto"], "l7": None, "flow_id": v["flow_id"]} for v in merged.values()]
+    out = _graph_conversations(fake, alert_n, cap)
+    out["kind"] = "hosts"
+    return out
+
+
+def _graph_subnet(rows: list[dict], alert_n: dict[str, int], cap: int) -> dict[str, Any]:
+    nodes = {
+        "internal": {"id": "internal", "label": "Internal (RFC1918)", "bytes": 0, "packets": 0, "alerts": 0, "kind": "zone"},
+        "external": {"id": "external", "label": "External / other", "bytes": 0, "packets": 0, "alerts": 0, "kind": "zone"},
+    }
+    edges = []
+    for r in rows:
+        src, dst = r.get("src_ip"), r.get("dst_ip")
+        if not src or not dst:
+            continue
+        s = "internal" if is_private_ip(src) else "external"
+        d = "internal" if is_private_ip(dst) else "external"
+        b = int(r.get("bytes") or 0)
+        nodes[s]["bytes"] += b
+        nodes[d]["bytes"] += b
+        nodes[s]["packets"] += int(r.get("packets") or 0)
+        edges.append({"source": s, "target": d, "bytes": b, "packets": int(r.get("packets") or 0), "proto": r.get("proto") or "OTHER", "flow_id": r.get("flow_id")})
+    # keep a few named hosts as satellites
+    conv = _graph_conversations(rows, alert_n, min(cap, 12))
+    for n in conv["nodes"]:
+        if n["id"] not in nodes:
+            nodes[n["id"]] = n
+            zone = "internal" if n.get("internal") else "external"
+            edges.append({"source": zone, "target": n["id"], "bytes": n.get("bytes") or 0, "packets": n.get("packets") or 0, "proto": "OTHER"})
+    return {"kind": "subnet", "nodes": list(nodes.values()), "edges": edges[:80], "capped": False, "geo": any(not is_private_ip(r.get("src_ip") or "") or not is_private_ip(r.get("dst_ip") or "") for r in rows)}
+
+
+def _cap_graph(nodes: dict[str, dict], edges: list[dict], cap: int, kind: str) -> dict[str, Any]:
+    ranked = sorted(nodes.values(), key=lambda n: n.get("bytes") or 0, reverse=True)
+    keep = {n["id"] for n in ranked[:cap]}
+    capped = len(ranked) > cap
+    if capped:
+        others = {"id": "others", "label": "others", "bytes": 0, "packets": 0, "alerts": 0, "kind": "other"}
+        for n in ranked[cap:]:
+            others["bytes"] += n.get("bytes") or 0
+            others["packets"] += n.get("packets") or 0
+        keep.add("others")
+        nodes = {k: v for k, v in nodes.items() if k in keep}
+        nodes["others"] = others
+        new_edges = []
+        for e in edges:
+            s = e["source"] if e["source"] in keep else "others"
+            t = e["target"] if e["target"] in keep else "others"
+            if s == t == "others":
+                continue
+            e = dict(e)
+            e["source"], e["target"] = s, t
+            new_edges.append(e)
+        edges = new_edges
+    else:
+        nodes = {k: v for k, v in nodes.items() if k in keep}
+        edges = [e for e in edges if e["source"] in keep and e["target"] in keep]
+    public = any(not n.get("internal", True) and n.get("kind") not in ("service", "other", "zone") for n in nodes.values())
+    return {"kind": kind, "nodes": list(nodes.values()), "edges": edges, "capped": capped, "geo": public}
 
 
 def _interarrival(store: Store, t0: float, t1: float) -> dict[str, Any]:

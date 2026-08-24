@@ -2,7 +2,7 @@
 
 Defensive SOC / lab dashboard for **Kali Linux**: packet metadata, bidirectional flows, IDS alerts, and supporting statistics. Monitoring and detection only. No exploit payloads, no attack how-tos.
 
-Workspace: `/mnt/5TB/git/9yards`
+Project root: `/workspace/project` (substitute your actual path).
 
 ## Architecture (short)
 
@@ -39,14 +39,14 @@ Payloads are **not** stored unless `NIDS_STORE_PAYLOAD=1` (hex/ASCII cap).
 
 ## Pages
 
-Overview · Packets · Flows · Alerts · Protocols · Hosts · Settings
+Overview · Packets · Flows · Alerts · Hosts · Protocols · Maps / Diagrams · Statistics · Capture Health · Settings
 
-Global time picker (5m / 15m / 1h / 6h / 24h), search, auto-refresh with pause, CSV/JSON export, empty/error states.
+Sticky filter bar (time, IP, port, protocol, search), inner tabs, conversation graphs, inspect drawer. Auto-refresh with pause, CSV/JSON export.
 
 ## Install + run (Kali)
 
 ```bash
-cd /mnt/5TB/git/9yards
+cd /workspace/project   # substitute your actual path
 chmod +x start.sh scripts/*.sh
 ./start.sh
 ```
@@ -65,7 +65,7 @@ curl -s http://127.0.0.1:8787/api/health | python3 -m json.tool
 ### Manual steps (same thing, split)
 
 ```bash
-cd /mnt/5TB/git/9yards
+cd /workspace/project   # substitute your actual path
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt

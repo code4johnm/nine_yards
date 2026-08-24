@@ -4,10 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>9yards NIDS</title>
-  <link rel="stylesheet" href="/css/app.css?v=2" />
+  <link rel="stylesheet" href="/css/app.css?v=3" />
 </head>
 <body>
-  <header class="topbar">
+  <header class="brandbar">
     <div class="brand">
       <span class="logo">9Y</span>
       <div>
@@ -15,18 +15,15 @@
         <div class="subtitle">Packet · Flow · IDS · Stats</div>
       </div>
     </div>
-    <label class="ctl">
-      Interface
-      <select id="global-iface" title="Capture interface"></select>
-    </label>
-    <label class="ctl">
-      BPF filter
-      <select id="global-bpf" title="Capture filter preset"></select>
-    </label>
-    <label class="ctl hidden" id="bpf-custom-wrap">
-      Custom BPF
-      <input id="global-bpf-custom" placeholder="tcp port 443" />
-    </label>
+    <span id="demo-flag" class="demo-flag off">DEMO</span>
+    <span id="health-pill" class="pill info">…</span>
+    <button id="btn-live" class="ghost">Start live</button>
+  </header>
+
+  <div class="filterbar" id="filterbar">
+    <label class="ctl">Interface <select id="global-iface"></select></label>
+    <label class="ctl">BPF <select id="global-bpf"></select></label>
+    <label class="ctl hidden" id="bpf-custom-wrap">Custom BPF <input id="global-bpf-custom" placeholder="tcp port 443" /></label>
     <div class="timepicker" id="timepicker">
       <button data-range="5m">5m</button>
       <button data-range="15m" class="on">15m</button>
@@ -34,39 +31,32 @@
       <button data-range="6h">6h</button>
       <button data-range="24h">24h</button>
     </div>
-    <div class="searchwrap">
-      <input id="q" type="search" placeholder="Filter IP, port, signature, SNI…" />
-    </div>
-    <div class="top-actions">
-      <label class="chk"><input type="checkbox" id="autorefresh" checked /> Auto-refresh</label>
-      <label class="ctl">
-        Interval
-        <select id="refresh-interval">
-          <option value="2000">2s</option>
-          <option value="4000" selected>4s</option>
-          <option value="10000">10s</option>
-          <option value="30000">30s</option>
-        </select>
-      </label>
-      <button id="btn-live" class="ghost" title="Start or stop live capture">Start live</button>
-      <span id="health-pill" class="pill info">…</span>
-    </div>
-  </header>
+    <label class="ctl">IP <input id="g-ip" placeholder="10.0.0.10" /></label>
+    <label class="ctl">Port <input id="g-port" type="number" placeholder="443" /></label>
+    <label class="ctl">Protocol <select id="g-proto"><option value="">Any</option><option>TCP</option><option>UDP</option><option>ICMP</option><option>ARP</option></select></label>
+    <label class="ctl searchwrap" style="flex:1;min-width:180px">Search <input id="q" type="search" placeholder="IP, signature, SNI…" /></label>
+    <label class="chk"><input type="checkbox" id="autorefresh" checked /> Live</label>
+    <label class="ctl">Interval
+      <select id="refresh-interval">
+        <option value="5000" selected>5s</option>
+        <option value="10000">10s</option>
+        <option value="15000">15s</option>
+      </select>
+    </label>
+  </div>
 
-  <nav class="nav">
-    <a href="#/overview" data-page="overview">Overview</a>
-    <a href="#/packets" data-page="packets">Packets</a>
-    <a href="#/flows" data-page="flows">Flows</a>
-    <a href="#/alerts" data-page="alerts">Alerts</a>
-    <a href="#/protocols" data-page="protocols">Protocols</a>
-    <a href="#/hosts" data-page="hosts">Hosts</a>
-    <a href="#/settings" data-page="settings">Settings</a>
-  </nav>
-
+  <nav class="tabs" id="tabs"></nav>
+  <nav class="subtabs" id="subtabs"></nav>
   <div id="banner" class="banner hidden"></div>
-  <div id="demo-banner" class="banner demo hidden">DEMO dataset loaded — labeled events are not live sensor traffic.</div>
-
   <main id="main" class="main"></main>
+
+  <aside id="drawer" class="drawer" aria-hidden="true">
+    <header>
+      <strong id="drawer-title">Inspect</strong>
+      <button id="drawer-close" class="ghost">Close</button>
+    </header>
+    <div class="body" id="drawer-body"></div>
+  </aside>
 
   <footer class="statusbar">
     <span id="sb-iface">iface —</span>
@@ -75,20 +65,12 @@
     <span id="sb-drops">drops —</span>
     <span id="sb-bind">bind 127.0.0.1</span>
     <span id="sb-ws">ws …</span>
+    <span>Ctrl+1–9  [ ] tabs</span>
   </footer>
+  <div id="chart-tip"></div>
 
-  <div id="modal" class="modal hidden">
-    <div class="modal-card">
-      <header>
-        <strong id="modal-title">Detail</strong>
-        <button id="modal-close" class="ghost">Close</button>
-      </header>
-      <pre id="modal-body"></pre>
-    </div>
-  </div>
-
-  <script src="/js/charts.js?v=2"></script>
-  <script src="/js/api.js?v=2"></script>
-  <script src="/js/app.js?v=2"></script>
+  <script src="/js/charts.js?v=3"></script>
+  <script src="/js/api.js?v=3"></script>
+  <script src="/js/app.js?v=3"></script>
 </body>
 </html>

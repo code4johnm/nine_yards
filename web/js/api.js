@@ -58,6 +58,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body || {}),
       }),
+    graph: (p) => req("/api/graph?" + qs(p)),
     exportUrl: (kind, range, fmt) => `/api/export/${kind}?range=${encodeURIComponent(range)}&fmt=${fmt}`,
   };
 })(window);
