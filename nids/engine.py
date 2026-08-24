@@ -69,6 +69,7 @@ class Engine:
         started = self.sensors.start(eve_path=eve, zeek_dir=zeek, syslog_path=syslog)
         if started:
             log.info("sensors: %s", started)
+        self.restore_runtime_settings()
         if self.settings.live_enabled:
             try:
                 self.capture.start_live()
@@ -153,13 +154,53 @@ class Engine:
                 self._on_alert(a)
         return {"packets": n}
 
-    def start_live(self, iface: str | None = None, bpf: str | None = None) -> dict:
+    def apply_settings(self, patch: dict[str, Any]) -> dict[str, Any]:
+        """Update runtime capture/display settings. Does not restart a live tap."""
+        if "iface" in patch and patch["iface"]:
+            self.settings.iface = str(patch["iface"])
+            self.capture.iface = self.settings.iface
+        if "bpf" in patch:
+            self.settings.bpf = str(patch["bpf"] or "")
+            self.capture.bpf = self.settings.bpf
+        if "store_pcap" in patch:
+            self.settings.store_pcap = bool(patch["store_pcap"])
+            self.capture.store_pcap = self.settings.store_pcap
+        if "payload_enabled" in patch:
+            self.settings.payload_enabled = bool(patch["payload_enabled"])
+        if "payload_max_bytes" in patch:
+            try:
+                n = int(patch["payload_max_bytes"])
+                self.settings.payload_max_bytes = max(32, min(n, 4096))
+            except (TypeError, ValueError):
+                pass
+        if "autoload_demo" in patch:
+            self.settings.autoload_demo = bool(patch["autoload_demo"])
+        snapshot = {
+            "iface": self.settings.iface,
+            "bpf": self.settings.bpf,
+            "store_pcap": self.settings.store_pcap,
+            "payload_enabled": self.settings.payload_enabled,
+            "payload_max_bytes": self.settings.payload_max_bytes,
+            "autoload_demo": self.settings.autoload_demo,
+        }
+        self.store.set_kv("runtime_settings", snapshot)
+        return snapshot
+
+    def restore_runtime_settings(self) -> None:
+        saved = self.store.get_kv("runtime_settings")
+        if isinstance(saved, dict):
+            self.apply_settings(saved)
+
+    def start_live(self, iface: str | None = None, bpf: str | None = None, store_pcap: bool | None = None) -> dict:
         if iface:
             self.settings.iface = iface
             self.capture.iface = iface
         if bpf is not None:
             self.settings.bpf = bpf
             self.capture.bpf = bpf
+        if store_pcap is not None:
+            self.settings.store_pcap = bool(store_pcap)
+            self.capture.store_pcap = self.settings.store_pcap
         self.capture.start_live()
         self.store.set_sensor(
             status="live",

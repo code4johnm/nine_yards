@@ -5,8 +5,20 @@
     q: "",
     paused: false,
     offset: 0,
-    sort: {},
+    refreshMs: 4000,
     ws: null,
+    meta: null,
+    live: false,
+    pkt: { proto: "", l7: "", ip: "", port: "", retrans: false, vlan: false },
+    flow: { view: "", proto: "" },
+    alert: {
+      source: "",
+      sevs: { critical: true, high: true, medium: true, low: true, info: true },
+      includeAcked: false,
+      includeMuted: false,
+      hideDemo: false,
+    },
+    hostSort: "bytes_out",
   };
 
   const $ = (sel) => document.querySelector(sel);
@@ -55,6 +67,70 @@
     sev = (sev || "info").toLowerCase();
     return `<span class="pill ${esc(sev)}">${esc(sev)}</span>`;
   }
+  function opts(items, selected, blank) {
+    const out = [];
+    if (blank != null) out.push(`<option value="">${esc(blank)}</option>`);
+    (items || []).forEach((it) => {
+      const val = typeof it === "string" ? it : (it.id ?? it.name ?? it.value);
+      const lab = typeof it === "string" ? it : (it.label || it.name || val);
+      const sel = String(val) === String(selected) ? " selected" : "";
+      out.push(`<option value="${esc(val)}"${sel}>${esc(lab)}</option>`);
+    });
+    return out.join("");
+  }
+
+  function currentBpf() {
+    const preset = $("#global-bpf")?.value;
+    if (preset === "custom") return ($("#global-bpf-custom")?.value || "").trim();
+    const found = (state.meta?.bpf_presets || []).find((p) => p.id === preset);
+    return found && found.bpf != null ? found.bpf : "";
+  }
+
+  function syncBpfCustom() {
+    const custom = $("#global-bpf")?.value === "custom";
+    $("#bpf-custom-wrap")?.classList.toggle("hidden", !custom);
+  }
+
+  function fillGlobalControls() {
+    const meta = state.meta || {};
+    const ifaces = meta.ifaces || [];
+    const presets = meta.bpf_presets || [];
+    const curIface = meta.settings?.iface || meta.capture?.iface || "any";
+    const curBpf = meta.settings?.bpf || "";
+    const ifaceEl = $("#global-iface");
+    const bpfEl = $("#global-bpf");
+    if (ifaceEl) {
+      ifaceEl.innerHTML = opts(ifaces.map((i) => ({ value: i.name, label: i.label || i.name })), curIface);
+      if (![...ifaceEl.options].some((o) => o.value === curIface) && curIface) {
+        const o = document.createElement("option");
+        o.value = curIface;
+        o.textContent = curIface;
+        o.selected = true;
+        ifaceEl.appendChild(o);
+      }
+    }
+    if (bpfEl) {
+      const match = presets.find((p) => (p.bpf || "") === curBpf && p.id !== "custom");
+      bpfEl.innerHTML = opts(presets.map((p) => ({ value: p.id, label: p.label })), match ? match.id : (curBpf ? "custom" : "all"));
+      if ($("#global-bpf-custom") && !match) $("#global-bpf-custom").value = curBpf;
+    }
+    syncBpfCustom();
+    setLiveUi(!!(meta.capture && meta.capture.running));
+  }
+
+  function setLiveUi(running) {
+    state.live = running;
+    const b = $("#btn-live");
+    if (!b) return;
+    b.textContent = running ? "Stop live" : "Start live";
+    b.classList.toggle("live-on", running);
+  }
+
+  async function refreshMeta() {
+    state.meta = await API.meta();
+    fillGlobalControls();
+    return state.meta;
+  }
 
   function setPage() {
     const hash = (location.hash || "#/overview").replace("#/", "").split("?")[0];
@@ -79,17 +155,46 @@
   $("#q").addEventListener("keydown", (e) => {
     if (e.key === "Enter") render();
   });
-  $("#btn-pause").addEventListener("click", () => {
-    state.paused = !state.paused;
-    $("#autorefresh").checked = !state.paused;
-    $("#btn-pause").textContent = state.paused ? "Resume" : "Pause";
-  });
   $("#autorefresh").addEventListener("change", (e) => {
     state.paused = !e.target.checked;
-    $("#btn-pause").textContent = state.paused ? "Resume" : "Pause";
+  });
+  $("#refresh-interval")?.addEventListener("change", (e) => {
+    state.refreshMs = Number(e.target.value) || 4000;
+  });
+  $("#global-bpf")?.addEventListener("change", () => {
+    syncBpfCustom();
+    API.saveSettings({ iface: $("#global-iface").value, bpf: currentBpf() }).catch(() => {});
+  });
+  $("#global-iface")?.addEventListener("change", () => {
+    API.saveSettings({ iface: $("#global-iface").value, bpf: currentBpf() }).catch(() => {});
+  });
+  $("#global-bpf-custom")?.addEventListener("change", () => {
+    API.saveSettings({ iface: $("#global-iface").value, bpf: currentBpf() }).catch(() => {});
   });
   $("#modal-close").addEventListener("click", () => $("#modal").classList.add("hidden"));
   window.addEventListener("hashchange", setPage);
+
+  $("#btn-live").addEventListener("click", async () => {
+    clearErr();
+    try {
+      if (state.live) {
+        await API.stopLive();
+        setLiveUi(false);
+      } else {
+        const body = {
+          iface: $("#global-iface").value,
+          bpf: currentBpf(),
+        };
+        await API.saveSettings({ iface: body.iface, bpf: body.bpf });
+        await API.startLive(body);
+        setLiveUi(true);
+      }
+      await refreshMeta();
+      if (state.page === "settings") render();
+    } catch (e) {
+      showErr(e);
+    }
+  });
 
   function modal(title, obj) {
     $("#modal-title").textContent = title;
@@ -122,16 +227,16 @@
       API.timeseries(params({ metric: "alerts" })),
       API.timeseries(params({ metric: "flows" })),
       API.stats(params()),
-      API.alerts(params({ limit: 8 })),
+      API.alerts(params({ limit: 8, hide_demo: state.alert.hideDemo })),
     ]);
     if (kpis.demo) demoBanner.classList.remove("hidden");
     else demoBanner.classList.add("hidden");
     main.innerHTML = `
       <section class="kpis">
-        ${kpiCard("pps", fmtNum(kpis.pps), tsPps.points)}
-        ${kpiCard("bps", fmtBps(kpis.bps), tsPps.points)}
-        ${kpiCard("active flows", fmtNum(kpis.active_flows), tsFlows.points)}
-        ${kpiCard("alert rate", fmtNum(kpis.alert_rate) + "/s", tsAlerts.points)}
+        ${kpiCard("pps", fmtNum(kpis.pps))}
+        ${kpiCard("bps", fmtBps(kpis.bps))}
+        ${kpiCard("active flows", fmtNum(kpis.active_flows))}
+        ${kpiCard("alert rate", fmtNum(kpis.alert_rate) + "/s")}
         ${kpiCard("unique hosts", fmtNum(kpis.unique_hosts))}
         ${kpiCard("drops / errors", fmtNum(kpis.drops) + " / " + fmtNum(kpis.errors))}
       </section>
@@ -154,7 +259,7 @@
     bindAlertActions();
   }
 
-  function kpiCard(label, value, spark) {
+  function kpiCard(label, value) {
     const id = "sp-" + label.replace(/\W+/g, "");
     return `<div class="kpi"><div class="k">${esc(label)}</div><div class="v">${esc(value)}</div>
       <canvas id="${id}"></canvas></div>`;
@@ -182,8 +287,24 @@
     );
   }
 
+  function packetQuery() {
+    return params({
+      limit: 200,
+      offset: state.offset,
+      ip: state.pkt.ip,
+      port: state.pkt.port,
+      proto: state.pkt.proto,
+      l7: state.pkt.l7,
+      retrans: state.pkt.retrans ? "true" : "",
+      vlan_only: state.pkt.vlan ? "true" : "",
+    });
+  }
+
   async function renderPackets() {
-    const data = await API.packets(params({ limit: 200, offset: state.offset }));
+    if (!state.meta) await refreshMeta();
+    const data = await API.packets(packetQuery());
+    const protos = state.meta?.protocols || ["TCP", "UDP", "ICMP", "ARP"];
+    const l7s = state.meta?.l7 || [];
     main.innerHTML = `
       <div class="panel">
         <div class="panel-head">
@@ -193,10 +314,15 @@
             · <a href="${API.exportUrl("packets", state.range, "json")}">JSON</a>
           </div>
         </div>
-        <div class="filters">
-          <input id="f-ip" placeholder="IP" />
-          <input id="f-port" placeholder="Port" type="number" />
-          <input id="f-proto" placeholder="Proto (TCP/UDP)" />
+        <div class="toolbar">
+          <label class="field"><span>IP</span><input id="f-ip" placeholder="10.50.1.99" value="${esc(state.pkt.ip)}" /></label>
+          <label class="field"><span>Port</span><input id="f-port" placeholder="443" type="number" value="${esc(state.pkt.port)}" /></label>
+          <label class="field"><span>Protocol</span><select id="f-proto">${opts(protos, state.pkt.proto, "Any proto")}</select></label>
+          <label class="field"><span>Application</span><select id="f-l7">${opts(l7s, state.pkt.l7, "Any L7")}</select></label>
+          <div class="chk-row">
+            <label class="chk"><input type="checkbox" id="f-retrans" ${state.pkt.retrans ? "checked" : ""} /> Retransmissions only</label>
+            <label class="chk"><input type="checkbox" id="f-vlan" ${state.pkt.vlan ? "checked" : ""} /> VLAN tagged only</label>
+          </div>
           <button id="f-go" class="primary">Apply</button>
         </div>
         ${table(
@@ -217,24 +343,24 @@
         )}
         ${pager(data)}
       </div>`;
-    $("#f-go")?.addEventListener("click", async () => {
-      const extra = {
-        ip: $("#f-ip").value,
-        port: $("#f-port").value,
-        proto: $("#f-proto").value,
-        limit: 200,
-        offset: 0,
-      };
-      const d = await API.packets(params(extra));
-      renderPacketRows(d);
+    const grabPkt = () => {
+      state.pkt.ip = $("#f-ip").value.trim();
+      state.pkt.port = $("#f-port").value.trim();
+      state.pkt.proto = $("#f-proto").value;
+      state.pkt.l7 = $("#f-l7").value;
+      state.pkt.retrans = $("#f-retrans").checked;
+      state.pkt.vlan = $("#f-vlan").checked;
+      state.offset = 0;
+    };
+    $("#f-go")?.addEventListener("click", () => { grabPkt(); render(); });
+    ["f-proto", "f-l7", "f-retrans", "f-vlan"].forEach((id) => {
+      $(`#${id}`)?.addEventListener("change", () => { grabPkt(); render(); });
     });
     main.querySelectorAll("[data-pkt]").forEach((el) => {
       el.addEventListener("click", () => openPacket(el.dataset.pkt));
     });
     bindPager();
   }
-
-  function renderPacketRows() {}
 
   async function openPacket(id) {
     const p = await API.packet(id);
@@ -249,18 +375,37 @@
   }
 
   async function renderFlows() {
+    if (!state.meta) await refreshMeta();
+    const protos = state.meta?.protocols || ["TCP", "UDP", "ICMP"];
     main.innerHTML = `
-      <div class="filters">
-        <button data-view="">All</button>
-        <button data-view="elephant">Elephant</button>
-        <button data-view="scan">Scan-like</button>
-        <button data-view="long">Long-lived</button>
-        <button data-view="short">Short-lived</button>
-        <a href="${API.exportUrl("flows", state.range, "csv")}">CSV</a>
-      </div>
-      <div class="panel" id="flow-panel"></div>`;
-    async function load(view) {
-      const data = await API.flows(params({ view, limit: 200, offset: state.offset, sort: "bytes" }));
+      <div class="panel">
+        <div class="toolbar">
+          <label class="field"><span>View</span>
+            <select id="flow-view">
+              ${opts([
+                { value: "", label: "All flows" },
+                { value: "elephant", label: "Elephant (≥100 KB)" },
+                { value: "scan", label: "Scan-like" },
+                { value: "long", label: "Long-lived (≥30s)" },
+                { value: "short", label: "Short-lived (<2s)" },
+              ], state.flow.view)}
+            </select>
+          </label>
+          <label class="field"><span>Protocol</span>
+            <select id="flow-proto">${opts(protos, state.flow.proto, "Any proto")}</select>
+          </label>
+          <a href="${API.exportUrl("flows", state.range, "csv")}">CSV</a>
+        </div>
+        <div id="flow-panel"></div>
+      </div>`;
+    async function load() {
+      const data = await API.flows(params({
+        view: state.flow.view,
+        proto: state.flow.proto,
+        limit: 200,
+        offset: state.offset,
+        sort: "bytes",
+      }));
       $("#flow-panel").innerHTML = `
         <div class="panel-head"><h2>Flows ${fmtNum(data.total)}</h2></div>
         ${table(
@@ -283,17 +428,19 @@
       $("#flow-panel").querySelectorAll("[data-flow]").forEach((el) => {
         el.addEventListener("click", () => openFlow(el.dataset.flow));
       });
-      bindPager(() => load(view));
+      bindPager(() => load());
     }
-    main.querySelectorAll("[data-view]").forEach((b) => {
-      b.addEventListener("click", () => {
-        main.querySelectorAll("[data-view]").forEach((x) => x.classList.toggle("on", x === b));
-        state.offset = 0;
-        load(b.dataset.view);
-      });
+    $("#flow-view").addEventListener("change", () => {
+      state.flow.view = $("#flow-view").value;
+      state.offset = 0;
+      load();
     });
-    main.querySelector("[data-view='']").classList.add("on");
-    await load("");
+    $("#flow-proto").addEventListener("change", () => {
+      state.flow.proto = $("#flow-proto").value;
+      state.offset = 0;
+      load();
+    });
+    await load();
   }
 
   async function openFlow(id) {
@@ -302,10 +449,29 @@
     modal("Flow " + id, { flow: f, packets: pkts.rows });
   }
 
+  function selectedSeverities() {
+    return Object.entries(state.alert.sevs)
+      .filter(([, on]) => on)
+      .map(([k]) => k)
+      .join(",");
+  }
+
   async function renderAlerts() {
-    const data = await API.alerts(params({ limit: 250 }));
+    if (!state.meta) await refreshMeta();
+    const q = params({
+      limit: 250,
+      offset: state.offset,
+      source: state.alert.source,
+      severity: selectedSeverities(),
+      include_acked: state.alert.includeAcked ? "true" : "",
+      include_muted: state.alert.includeMuted ? "true" : "",
+      hide_demo: state.alert.hideDemo ? "true" : "",
+    });
+    const data = await API.alerts(q);
     const stats = await API.stats(params());
     if (data.demo) demoBanner.classList.remove("hidden");
+    const sources = state.meta?.alert_sources || [];
+    const sevs = state.meta?.severities || ["critical", "high", "medium", "low", "info"];
     main.innerHTML = `
       <section class="grid-3">
         <div class="panel"><h2>Top signatures</h2>${barsHtml(stats.top_signatures, "signature", "hits")}</div>
@@ -317,9 +483,33 @@
           <h2>Alert feed (${fmtNum(data.total)})</h2>
           <a href="${API.exportUrl("alerts", state.range, "csv")}">CSV</a>
         </div>
+        <div class="toolbar">
+          <label class="field"><span>Source</span>
+            <select id="al-source">${opts(sources, state.alert.source, "All sources")}</select>
+          </label>
+          <div class="chk-row">
+            ${sevs.map((s) => `<label class="chk"><input type="checkbox" data-sev="${s}" ${state.alert.sevs[s] ? "checked" : ""} /> ${s}</label>`).join("")}
+          </div>
+          <div class="chk-row">
+            <label class="chk"><input type="checkbox" id="al-acked" ${state.alert.includeAcked ? "checked" : ""} /> Include acked</label>
+            <label class="chk"><input type="checkbox" id="al-muted" ${state.alert.includeMuted ? "checked" : ""} /> Include muted</label>
+            <label class="chk"><input type="checkbox" id="al-demo" ${state.alert.hideDemo ? "checked" : ""} /> Hide DEMO</label>
+          </div>
+        </div>
         ${alertTable(data.rows)}
         ${pager(data)}
       </div>`;
+    $("#al-source").addEventListener("change", () => { state.alert.source = $("#al-source").value; state.offset = 0; render(); });
+    main.querySelectorAll("[data-sev]").forEach((el) => {
+      el.addEventListener("change", () => {
+        state.alert.sevs[el.dataset.sev] = el.checked;
+        state.offset = 0;
+        render();
+      });
+    });
+    $("#al-acked").addEventListener("change", () => { state.alert.includeAcked = $("#al-acked").checked; render(); });
+    $("#al-muted").addEventListener("change", () => { state.alert.includeMuted = $("#al-muted").checked; render(); });
+    $("#al-demo").addEventListener("change", () => { state.alert.hideDemo = $("#al-demo").checked; render(); });
     bindAlertActions();
     bindPager();
   }
@@ -378,10 +568,24 @@
   }
 
   async function renderHosts() {
-    const data = await API.hosts(params({ limit: 250 }));
+    const data = await API.hosts(params({ limit: 250, sort: state.hostSort }));
     main.innerHTML = `
       <div class="panel">
-        <div class="panel-head"><h2>Hosts ${fmtNum(data.total)}</h2></div>
+        <div class="panel-head">
+          <h2>Hosts ${fmtNum(data.total)}</h2>
+          <label class="field"><span>Sort</span>
+            <select id="host-sort">
+              ${opts([
+                { value: "bytes_out", label: "Bytes out" },
+                { value: "bytes_in", label: "Bytes in" },
+                { value: "packets_out", label: "Packets out" },
+                { value: "packets_in", label: "Packets in" },
+                { value: "alert_count", label: "Alert count" },
+                { value: "last_seen", label: "Last seen" },
+              ], state.hostSort)}
+            </select>
+          </label>
+        </div>
         ${table(
           [
             { label: "IP" }, { label: "First" }, { label: "Last" }, { label: "Bytes out" },
@@ -398,6 +602,10 @@
           "No hosts observed."
         )}
       </div>`;
+    $("#host-sort").addEventListener("change", () => {
+      state.hostSort = $("#host-sort").value;
+      render();
+    });
     main.querySelectorAll("[data-host]").forEach((el) => {
       el.addEventListener("click", async () => {
         const h = await API.host(el.dataset.host, { range: state.range });
@@ -409,31 +617,51 @@
   async function renderSettings() {
     const [health, sensor, settings] = await Promise.all([API.health(), API.sensor(), API.settings()]);
     const tools = health.tools || {};
-    const ifaces = (sensor.ifaces || []).map((i) => `<option value="${esc(i.name)}">${esc(i.label || i.name)}</option>`).join("");
+    const ifaces = settings.ifaces || sensor.ifaces || [];
+    const presets = settings.bpf_presets || state.meta?.bpf_presets || [];
+    const match = presets.find((p) => (p.bpf || "") === (settings.bpf || "") && p.id !== "custom");
+    const bpfId = match ? match.id : ((settings.bpf && "custom") || "all");
     main.innerHTML = `
       <section class="grid-2">
         <div class="panel">
-          <h2>Sensor</h2>
-          <p>Status: <span class="pill info">${esc(sensor.status || "idle")}</span> source ${esc(sensor.source || "")}</p>
-          <p class="muted">Live capture needs group <span class="mono">wireshark</span> (dumpcap has cap_net_raw). Default bind is localhost.</p>
-          <div class="filters">
-            <select id="iface">${ifaces}</select>
-            <input id="bpf" placeholder="optional BPF (tcp port 80)" value="${esc(settings.bpf || "")}" />
-            <button id="cap-start" class="primary">Start live</button>
-            <button id="cap-stop">Stop</button>
+          <h2>Capture sensor</h2>
+          <p>Status: <span class="pill ${sensor.capture?.running ? "high" : "info"}">${esc(sensor.status || "idle")}</span>
+            source ${esc(sensor.source || "")}</p>
+          <p class="hint">Live capture needs group <span class="mono">wireshark</span> (dumpcap has cap_net_raw). Bind stays localhost.</p>
+          <div class="form-grid">
+            <label class="field"><span>Interface</span>
+              <select id="iface">${opts(ifaces.map((i) => ({ value: i.name, label: i.label || i.name })), settings.iface)}</select>
+            </label>
+            <label class="field"><span>BPF preset</span>
+              <select id="set-bpf">${opts(presets.map((p) => ({ value: p.id, label: p.label })), bpfId)}</select>
+            </label>
+            <label class="field ${bpfId === "custom" ? "" : "hidden"}" id="set-bpf-custom-wrap"><span>Custom BPF</span>
+              <input id="bpf" placeholder="tcp port 80 or tcp port 443" value="${esc(settings.bpf || "")}" />
+            </label>
+            <div class="chk-row">
+              <label class="chk"><input type="checkbox" id="opt-pcap" ${settings.store_pcap ? "checked" : ""} /> Write rotating PCAP to data/capture</label>
+              <label class="chk"><input type="checkbox" id="opt-payload" ${settings.payload_enabled ? "checked" : ""} /> Store payload previews (hex/ASCII, capped)</label>
+              <label class="chk"><input type="checkbox" id="opt-demo" ${settings.autoload_demo ? "checked" : ""} /> Autoload DEMO when the database is empty</label>
+            </div>
+            <div class="filters">
+              <button id="save-set" class="primary">Save settings</button>
+              <button id="cap-start" class="primary">Start live</button>
+              <button id="cap-stop">Stop</button>
+            </div>
           </div>
-          <p>Interface counters: drops ${fmtNum(health.iface_stats?.rx_dropped)} errors ${fmtNum(health.iface_stats?.rx_errors)}</p>
-          <p>Last error: ${esc(health.capture?.last_error || sensor.last_error || "none")}</p>
+          <p class="hint">Interface counters: drops ${fmtNum(health.iface_stats?.rx_dropped)} errors ${fmtNum(health.iface_stats?.rx_errors)}</p>
+          <p class="hint">Last error: ${esc(health.capture?.last_error || sensor.last_error || "none")}</p>
         </div>
         <div class="panel">
           <h2>Demo / PCAP</h2>
-          <p>The dashboard is usable without a tap. Reload the labeled DEMO corpus:</p>
+          <p>Usable without a tap. Reload the labeled DEMO corpus:</p>
           <button id="load-demo" class="primary">Load DEMO dataset</button>
-          <p class="muted">Replaces current telemetry. Alerts tagged DEMO.</p>
-          <form id="pcap-form">
-            <label>Upload PCAP (metadata only)
+          <p class="hint">Replaces current telemetry. Alerts tagged DEMO.</p>
+          <form id="pcap-form" class="form-grid">
+            <label class="field"><span>Upload PCAP (metadata only)</span>
               <input type="file" id="pcap-file" accept=".pcap,.pcapng,*" />
             </label>
+            <label class="chk"><input type="checkbox" id="pcap-replace" checked /> Replace existing telemetry</label>
             <button type="submit">Ingest PCAP</button>
           </form>
         </div>
@@ -460,22 +688,50 @@
       <div class="panel">
         <h2>Operator notes</h2>
         <ul>
-          <li>Payloads are not stored unless <span class="mono">NIDS_STORE_PAYLOAD=1</span>.</li>
-          <li>Capture files land in <span class="mono">data/capture</span> mode 0700, rotated by dumpcap when enabled.</li>
+          <li>Payloads are not stored unless the checkbox above (or <span class="mono">NIDS_STORE_PAYLOAD=1</span>) is on.</li>
+          <li>Capture files land in <span class="mono">data/capture</span>, rotated by dumpcap when enabled.</li>
           <li>Optional: set <span class="mono">NIDS_SURICATA_EVE</span> / <span class="mono">NIDS_ZEEK_DIR</span> to tail real NSM logs.</li>
-          <li>Optional API token: <span class="mono">NIDS_TOKEN</span>.</li>
         </ul>
       </div>`;
-    $("#cap-start").addEventListener("click", async () => {
+
+    const bpfVal = () => {
+      const id = $("#set-bpf").value;
+      if (id === "custom") return ($("#bpf").value || "").trim();
+      const p = presets.find((x) => x.id === id);
+      return p && p.bpf != null ? p.bpf : "";
+    };
+    $("#set-bpf").addEventListener("change", () => {
+      const custom = $("#set-bpf").value === "custom";
+      $("#set-bpf-custom-wrap").classList.toggle("hidden", !custom);
+    });
+    const collect = () => ({
+      iface: $("#iface").value,
+      bpf: bpfVal(),
+      store_pcap: $("#opt-pcap").checked,
+      payload_enabled: $("#opt-payload").checked,
+      autoload_demo: $("#opt-demo").checked,
+    });
+    $("#save-set").addEventListener("click", async () => {
       try {
-        await API.startLive({ iface: $("#iface").value, bpf: $("#bpf").value });
+        await API.saveSettings(collect());
+        await refreshMeta();
         render();
       } catch (e) { showErr(e); }
     });
-    $("#cap-stop").addEventListener("click", async () => { await API.stopLive(); render(); });
+    $("#cap-start").addEventListener("click", async () => {
+      try {
+        const body = collect();
+        await API.saveSettings(body);
+        await API.startLive(body);
+        await refreshMeta();
+        render();
+      } catch (e) { showErr(e); }
+    });
+    $("#cap-stop").addEventListener("click", async () => { await API.stopLive(); await refreshMeta(); render(); });
     $("#load-demo").addEventListener("click", async () => {
       await API.loadDemo();
       demoBanner.classList.remove("hidden");
+      await refreshMeta();
       render();
     });
     $("#pcap-form").addEventListener("submit", async (e) => {
@@ -484,9 +740,10 @@
       if (!f) return;
       const fd = new FormData();
       fd.append("file", f);
-      const r = await fetch("/api/pcap/load?replace=true", { method: "POST", body: fd });
+      const replace = $("#pcap-replace").checked;
+      const r = await fetch("/api/pcap/load?replace=" + replace, { method: "POST", body: fd });
       if (!r.ok) showErr(new Error("upload failed"));
-      else render();
+      else { await refreshMeta(); render(); }
     });
   }
 
@@ -547,6 +804,7 @@
       $("#sb-bps").textContent = fmtBps(k.bps);
       $("#sb-drops").textContent = "drops " + fmtNum(k.drops);
       $("#sb-bind").textContent = "bind " + h.bind;
+      setLiveUi(!!h.capture?.running);
       if (h.demo_loaded) demoBanner.classList.remove("hidden");
     } catch (e) {
       $("#health-pill").textContent = "api down";
@@ -572,14 +830,21 @@
     };
   }
 
-  setInterval(() => {
-    if (!state.paused) {
-      tickStatus();
-      if (state.page === "overview") renderOverview().catch(() => {});
-    }
-  }, 4000);
+  let tickTimer = null;
+  function loopTick() {
+    if (tickTimer) clearTimeout(tickTimer);
+    tickTimer = setTimeout(async () => {
+      if (!state.paused) {
+        tickStatus();
+        if (state.page === "overview") renderOverview().catch(() => {});
+      }
+      loopTick();
+    }, state.refreshMs);
+  }
 
+  refreshMeta().catch(() => {});
   setPage();
   tickStatus();
   connectWs();
+  loopTick();
 })();

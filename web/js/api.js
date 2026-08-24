@@ -41,6 +41,7 @@
     stats: (p) => req("/api/stats/overview?" + qs(p)),
     hosts: (p) => req("/api/hosts?" + qs(p)),
     host: (ip, p) => req("/api/hosts/" + encodeURIComponent(ip) + "?" + qs(p)),
+    meta: () => req("/api/meta"),
     sensor: () => req("/api/sensor"),
     startLive: (body) =>
       req("/api/sensor/start", {
@@ -51,6 +52,12 @@
     stopLive: () => req("/api/sensor/stop", { method: "POST" }),
     loadDemo: () => req("/api/demo/load", { method: "POST" }),
     settings: () => req("/api/settings"),
+    saveSettings: (body) =>
+      req("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {}),
+      }),
     exportUrl: (kind, range, fmt) => `/api/export/${kind}?range=${encodeURIComponent(range)}&fmt=${fmt}`,
   };
 })(window);

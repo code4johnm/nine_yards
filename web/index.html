@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>9yards NIDS</title>
-  <link rel="stylesheet" href="/css/app.css" />
+  <link rel="stylesheet" href="/css/app.css?v=2" />
 </head>
 <body>
   <header class="topbar">
@@ -15,6 +15,18 @@
         <div class="subtitle">Packet · Flow · IDS · Stats</div>
       </div>
     </div>
+    <label class="ctl">
+      Interface
+      <select id="global-iface" title="Capture interface"></select>
+    </label>
+    <label class="ctl">
+      BPF filter
+      <select id="global-bpf" title="Capture filter preset"></select>
+    </label>
+    <label class="ctl hidden" id="bpf-custom-wrap">
+      Custom BPF
+      <input id="global-bpf-custom" placeholder="tcp port 443" />
+    </label>
     <div class="timepicker" id="timepicker">
       <button data-range="5m">5m</button>
       <button data-range="15m" class="on">15m</button>
@@ -26,8 +38,17 @@
       <input id="q" type="search" placeholder="Filter IP, port, signature, SNI…" />
     </div>
     <div class="top-actions">
-      <label class="toggle"><input type="checkbox" id="autorefresh" checked /> Auto</label>
-      <button id="btn-pause" class="ghost">Pause</button>
+      <label class="chk"><input type="checkbox" id="autorefresh" checked /> Auto-refresh</label>
+      <label class="ctl">
+        Interval
+        <select id="refresh-interval">
+          <option value="2000">2s</option>
+          <option value="4000" selected>4s</option>
+          <option value="10000">10s</option>
+          <option value="30000">30s</option>
+        </select>
+      </label>
+      <button id="btn-live" class="ghost" title="Start or stop live capture">Start live</button>
       <span id="health-pill" class="pill info">…</span>
     </div>
   </header>
@@ -66,8 +87,8 @@
     </div>
   </div>
 
-  <script src="/js/charts.js"></script>
-  <script src="/js/api.js"></script>
-  <script src="/js/app.js"></script>
+  <script src="/js/charts.js?v=2"></script>
+  <script src="/js/api.js?v=2"></script>
+  <script src="/js/app.js?v=2"></script>
 </body>
 </html>

@@ -18,7 +18,20 @@ from .config import Settings
 from .db import Store, serialize_row
 from .detect import scan_like_sql_hint
 from .engine import Engine
-from .util import flags_str, iface_stats, iso, list_ifaces, parse_range, tool_versions, zscore
+from .util import SEVERITY_ORDER, flags_str, iface_stats, iso, list_ifaces, parse_range, tool_versions, zscore
+
+BPF_PRESETS = [
+    {"id": "all", "label": "All traffic", "bpf": ""},
+    {"id": "ip", "label": "IPv4 only", "bpf": "ip"},
+    {"id": "tcp", "label": "TCP", "bpf": "tcp"},
+    {"id": "udp", "label": "UDP", "bpf": "udp"},
+    {"id": "icmp", "label": "ICMP", "bpf": "icmp"},
+    {"id": "dns", "label": "DNS (53)", "bpf": "port 53"},
+    {"id": "web", "label": "HTTP/HTTPS", "bpf": "tcp port 80 or tcp port 443"},
+    {"id": "ssh", "label": "SSH (22)", "bpf": "tcp port 22"},
+    {"id": "not-arp", "label": "Not ARP", "bpf": "not arp"},
+    {"id": "custom", "label": "Custom…", "bpf": None},
+]
 from .version import APP_NAME, VERSION
 
 WEB = Path(__file__).resolve().parent.parent / "web"
@@ -132,6 +145,8 @@ def build_app(settings: Settings, store: Store, engine: Engine, lifespan=None) -
         proto: str | None = None,
         flow_id: int | None = None,
         l7: str | None = None,
+        retrans: bool = False,
+        vlan_only: bool = False,
         limit: int = 200,
         offset: int = 0,
         sort: str = "ts",
@@ -155,6 +170,10 @@ def build_app(settings: Settings, store: Store, engine: Engine, lifespan=None) -
         if l7:
             where.append("l7 = ?")
             args.append(l7)
+        if retrans:
+            where.append("is_retrans = 1")
+        if vlan_only:
+            where.append("vlan IS NOT NULL")
         if q:
             where.append("(src_ip LIKE ? OR dst_ip LIKE ? OR IFNULL(info,'') LIKE ? OR IFNULL(sni,'') LIKE ? OR IFNULL(l7,'') LIKE ?)")
             like = f"%{q}%"
@@ -279,6 +298,7 @@ def build_app(settings: Settings, store: Store, engine: Engine, lifespan=None) -
         ip: str | None = None,
         include_acked: bool = False,
         include_muted: bool = False,
+        hide_demo: bool = False,
         limit: int = 200,
         offset: int = 0,
     ) -> dict[str, Any]:
@@ -289,9 +309,14 @@ def build_app(settings: Settings, store: Store, engine: Engine, lifespan=None) -
             where.append("acked=0")
         if not include_muted:
             where.append("muted=0")
+        if hide_demo:
+            where.append("is_demo=0")
         if severity:
-            where.append("severity=?")
-            args.append(severity.lower())
+            sevs = [s.strip().lower() for s in severity.split(",") if s.strip()]
+            sevs = [s for s in sevs if s in SEVERITY_ORDER]
+            if sevs:
+                where.append(f"severity IN ({','.join('?' for _ in sevs)})")
+                args.extend(sevs)
         if source:
             where.append("source=?")
             args.append(source)
@@ -475,11 +500,53 @@ def build_app(settings: Settings, store: Store, engine: Engine, lifespan=None) -
         }
         return s
 
+    @api.get("/meta")
+    def meta() -> dict[str, Any]:
+        t0, t1 = parse_range("24h")
+        protos = [r["proto"] for r in store.query(
+            "SELECT DISTINCT proto FROM packets WHERE proto IS NOT NULL ORDER BY proto"
+        )]
+        l7s = [r["l7"] for r in store.query(
+            "SELECT DISTINCT l7 FROM packets WHERE l7 IS NOT NULL AND l7 != '' ORDER BY l7"
+        )]
+        sources = [r["source"] for r in store.query(
+            "SELECT DISTINCT source FROM alerts WHERE source IS NOT NULL ORDER BY source"
+        )]
+        return {
+            "ifaces": list_ifaces(),
+            "bpf_presets": BPF_PRESETS,
+            "severities": list(SEVERITY_ORDER),
+            "protocols": protos or ["TCP", "UDP", "ICMP", "ARP"],
+            "l7": l7s,
+            "alert_sources": sources,
+            "settings": {
+                "iface": settings.iface,
+                "bpf": settings.bpf,
+                "payload_enabled": settings.payload_enabled,
+                "payload_max_bytes": settings.payload_max_bytes,
+                "store_pcap": settings.store_pcap,
+                "autoload_demo": settings.autoload_demo,
+                "live_enabled": settings.live_enabled,
+            },
+            "capture": engine.capture.status(),
+            "range": {"from": t0, "to": t1},
+        }
+
     @api.post("/sensor/start")
     def sensor_start(body: dict | None = None) -> dict[str, Any]:
         body = body or {}
         try:
-            return {"ok": True, **engine.start_live(body.get("iface"), body.get("bpf"))}
+            st = engine.start_live(
+                body.get("iface"),
+                body.get("bpf"),
+                store_pcap=body.get("store_pcap"),
+            )
+            engine.apply_settings({
+                "iface": engine.settings.iface,
+                "bpf": engine.settings.bpf,
+                "store_pcap": engine.settings.store_pcap,
+            })
+            return {"ok": True, **st}
         except Exception as e:
             raise HTTPException(400, f"capture failed: {e}") from e
 
@@ -517,11 +584,19 @@ def build_app(settings: Settings, store: Store, engine: Engine, lifespan=None) -
             "payload_max_bytes": settings.payload_max_bytes,
             "store_pcap": settings.store_pcap,
             "live_enabled": settings.live_enabled,
+            "autoload_demo": settings.autoload_demo,
             "max_packets": settings.max_packets,
             "suricata_eve": settings.suricata_eve,
             "zeek_dir": settings.zeek_dir,
             "token_required": bool(settings.api_token),
+            "ifaces": list_ifaces(),
+            "bpf_presets": BPF_PRESETS,
         }
+
+    @api.put("/settings")
+    def put_settings(body: dict) -> dict[str, Any]:
+        snap = engine.apply_settings(body or {})
+        return {"ok": True, **snap}
 
     @api.get("/export/{kind}")
     def export(kind: str, range: str = "15m", fmt: str = "csv") -> Any:
